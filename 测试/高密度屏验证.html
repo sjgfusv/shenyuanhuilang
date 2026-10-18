@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>高密度屏（DPR）验证台 · 深渊回廊</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #05060c; overflow: hidden; }
+  #stage { position: fixed; left: 0; top: 0; overflow: hidden; }
+  /* 与 主样式.css 里 realtime-mode 那条一致：画布铺满宿主 */
+  #stage canvas { display: block; width: 100% !important; height: 100% !important; max-width: none; }
+  #panel {
+    position: fixed; right: 8px; top: 8px; z-index: 10; max-width: 460px; max-height: 96vh; overflow: auto;
+    background: rgba(6,10,20,.94); border: 1px solid rgba(115,240,180,.28); border-radius: 10px;
+    padding: 10px 12px; color: #9fe0c0; font: 12px/1.55 ui-monospace, Consolas, monospace; white-space: pre-wrap;
+  }
+  .ok { color: #73f0b4; } .bad { color: #ff6d88; } .dim { color: #8fa2c8; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="panel">启动中…</div>
+<script>
+/* ------------------------------------------------------------
+   在 Phaser / 引擎加载**之前**覆盖 devicePixelRatio —— 这样引擎读到的
+   设备密度就是我们要验的那一档，整个过程不依赖真实屏幕。
+   （上一轮踩过的坑：运行期再用 Object.defineProperty 改无效，引擎早已缓存。）
+   ------------------------------------------------------------ */
+(function () {
+  var Q = new URLSearchParams(location.search);
+  var W = Math.round(parseFloat(Q.get('w') || '800'));
+  var H = Math.round(parseFloat(Q.get('h') || '360'));
+  var D = parseFloat(Q.get('dpr') || '') || window.devicePixelRatio || 1;
+  window.__VT = { W: W, H: H, D: D };
+  try {
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: function () { return D; } });
+  } catch (e) { /* 老浏览器忽略 */ }
+  var stage = document.getElementById('stage');
+  stage.style.width = W + 'px';
+  stage.style.height = H + 'px';
+})();
+</script>
+<script src="../vendor/phaser.min.js"></script>
+<script src="../角色形象.js"></script>
+<script src="../战斗2D.js"></script>
+<script>
+(function () {
+  var VT = window.__VT;
+  var out = document.getElementById('panel');
+  var lines = [], pass = 0, fail = 0;
+  function log(s, cls) { lines.push(cls ? '<span class="' + cls + '">' + s + '</span>' : s); out.innerHTML = lines.join('\n'); }
+  function sec(t) { lines.push(''); log('── ' + t + ' ──', 'dim'); }
+  function ok(cond, msg, extra) {
+    if (cond) { pass++; log('  ✓ ' + msg, 'ok'); }
+    else { fail++; log('  ✗ ' + msg + (extra != null ? '  → ' + extra : ''), 'bad'); }
+  }
+
+  var A = window.战斗2D, g = null, s = null;
+  VT.report = {};
+  var booted = false;
+
+  function boot() {
+    if (booted) return;               // load 事件与兜底 setTimeout 都会来一次
+    booted = true;
+    log('设备密度（注入）' + VT.D + '  舞台 CSS ' + VT.W + '×' + VT.H);
+    if (!A) { log('战斗2D 未加载', 'bad'); return; }
+    try { A.init(document.getElementById('stage'), true); A.show(); } catch (e) { log('init 异常：' + e, 'bad'); return; }
+    g = A.getGame();
+    waitReady(0);
+  }
+
+  function waitReady(n) {
+    if (!A.isReady()) {
+      if (n > 200) { log('引擎一直没就绪', 'bad'); return; }
+      return setTimeout(function () { waitReady(n + 1); }, 50);
+    }
+    A.startRun({
+      heroName: '密度测试', points: 0,
+      player: { maxHp: 100, hp: 100, attack: 10 },
+      difficulty: 'normal', heroId: 'warrior',
+      skill: { id: 'warrior' }, curses: [], environment: null
+    });
+    setTimeout(measure, 700);
+  }
+
+  function measure() {
+    s = A.getScene ? A.getScene() : g.scene.getScenes(true)[0];
+    if (!s || !s.ready) { return setTimeout(measure, 100); }
+    var diag = A.设备诊断 ? A.设备诊断() : {};
+    VT.report.diag = diag;
+    // ⚠️ 断言要拿"有效密度"（可能被预算限流）而不是设备标称密度：
+    //    限流是性能保护，属于设计行为；但画布像素、纹理像素、文字分辨率
+    //    必须三者都等于**同一个**有效密度。
+    var eff = diag.渲染密度 || VT.D;
+
+    sec('1. 画布像素密度');
+    var c = g.canvas, d = eff;
+    var cssW = c.clientWidth, cssH = c.clientHeight;
+    var px = c.width / (cssW || 1);
+    ok(Math.abs(px - d) < 0.01, '画布物理/CSS = ' + px.toFixed(3) + '（有效密度 ' + d +
+      (Math.abs(eff - VT.D) > 0.01 ? '，设备 ' + VT.D + ' 被预算限流' : '') + '）', px);
+    ok(cssW === VT.W && cssH === VT.H, '画布 CSS 尺寸 = 舞台尺寸（' + cssW + '×' + cssH + '）', cssW + '×' + cssH);
+    ok(Math.abs(s.scale.width - VT.W) < 2 && Math.abs(s.scale.height - VT.H) < 2,
+      '逻辑尺寸 = ' + s.scale.width + '×' + s.scale.height + '（布局口径不变）');
+
+    sec('2. 渲染管线三口一致');
+    var r = g.renderer;
+    ok(!!r.gl, '渲染器 = WebGL（Canvas 渲染器不启用本方案）');
+    var vp = r.gl ? r.gl.getParameter(r.gl.VIEWPORT).join(',') : '-';
+    ok(vp === '0,0,' + c.width + ',' + c.height, 'GL 视口铺满画布（' + vp + '）', vp);
+    ok(r.projectionWidth === s.scale.width && r.projectionHeight === s.scale.height,
+      '投影 = 逻辑尺寸（' + r.projectionWidth + '×' + r.projectionHeight + '）');
+    ok(Math.round(r.width) === c.width && Math.round(r.height) === c.height,
+      '渲染器尺寸 = 画布物理像素（' + r.width + '×' + r.height + '）');
+
+    sec('3. 相机仍是逻辑口径（跟随/边界/指针不受影响）');
+    var cam = s.cameras.main;
+    ok(Math.round(cam.width) === Math.round(s.scale.width) && Math.round(cam.height) === Math.round(s.scale.height),
+      '主相机 ' + Math.round(cam.width) + '×' + Math.round(cam.height) + '（= 逻辑尺寸）');
+    ok(cam.zoom === 1, '主相机 zoom = ' + cam.zoom + '（必须为 1）');
+    ok(s.cameras.cameras.length === 1, '只有一台相机（不做 HUD 双相机）', s.cameras.cameras.length);
+
+    sec('4. 布局几何（逻辑坐标，必须与密度无关）');
+    var geo = {
+      scaleW: Math.round(s.scale.width), scaleH: Math.round(s.scale.height),
+      groundY: Math.round(s.groundY),
+      heroX: Math.round(s.hero.x), heroY: Math.round(s.hero.y),
+      camScrollX: Math.round(cam.scrollX), camScrollY: Math.round(cam.scrollY),
+      hudSafeTop: Math.round(s.hudSafeTop()),
+      heroMeterW: Math.round(s.heroMeter.w), heroMeterFillH: s.heroMeter.fillH,
+      trackH: s.heroMeter.trackH,
+      trackDispW: Math.round(s.heroMeter.track.displayWidth),
+      trackDispH: Math.round(s.heroMeter.track.displayHeight),
+      hpText: [Math.round(s.hpText.x), Math.round(s.hpText.y), s.hpText.style.fontSize, s.hpText.style.resolution],
+      statFirst: (function (it) { return it ? [Math.round(it.text.x), Math.round(it.text.y), it.text.style.fontSize] : null; })(s.statItems && s.statItems[0]),
+      hudBtn: (s.hudButtons || []).map(function (b) { return [b.id, Math.round(b.x), Math.round(b.y), Math.round(b.w), Math.round(b.h)]; }),
+      meterTexW: s.heroMeter.texW, meterPx: s.heroMeter.px
+    };
+    VT.report.geo = geo;
+    log('  scale ' + geo.scaleW + '×' + geo.scaleH + '  地面y ' + geo.groundY +
+        '  hero ' + geo.heroX + ',' + geo.heroY + '  scroll ' + geo.camScrollX + ',' + geo.camScrollY);
+    log('  血条 w=' + geo.heroMeterW + ' 显示 ' + geo.trackDispW + '×' + geo.trackDispH +
+        '  纹理像素宽 ' + geo.meterTexW + '  密度档 ' + geo.meterPx);
+    ok(geo.trackDispW === geo.heroMeterW, '血条显示宽度 = 逻辑宽度（' + geo.trackDispW + '）—— 不再按密度变粗');
+    ok(Math.abs(geo.meterTexW - Math.round(Math.ceil(geo.heroMeterW / 8) * 8 * d)) <= 8,
+      '血条纹理按密度生成（' + geo.meterTexW + 'px ≈ 逻辑 ' + geo.heroMeterW + ' × ' + d + '）');
+
+    sec('5. 文字按密度栅格化');
+    var res = parseFloat(s.hpText.style.resolution) || 1;
+    ok(res >= d - 0.01, '生命值文字 resolution = ' + res + '（设备密度 ' + d + '）', res);
+    var anyLow = 0, nText = 0;
+    (function walk(list) {
+      (list || []).forEach(function (o) {
+        if (o.type === 'Text') {
+          nText++;
+          if ((parseFloat(o.style.resolution) || 1) < d - 0.01) anyLow++;
+        } else if (o.list) walk(o.list);
+      });
+    })(s.children.list);
+    ok(anyLow === 0, '画面内 ' + nText + ' 个文字全部按密度栅格化（未达标 ' + anyLow + ' 个）', anyLow);
+
+    sec('6. 画面覆盖（不能只画出一角 / 露底）');
+    ok(cssW === VT.W && cssH === VT.H, '画布覆盖舞台');
+    snapshotProbe();
+
+    sec('7. 诊断 API');
+    log(JSON.stringify(diag, null, 1), 'dim');
+  }
+
+  /* 用一帧快照做像素级检查：底边那排地面必须横跨整幅宽度。
+     —— 只画出一角（裁剪框错）时，最左/最右列会是纯背景色。 */
+  function snapshotProbe() {
+    try {
+      g.renderer.snapshot(function (img) {
+        var cv = document.createElement('canvas');
+        cv.width = img.width; cv.height = img.height;
+        var cx = cv.getContext('2d');
+        cx.drawImage(img, 0, 0);
+        var W = cv.width, H = cv.height;
+        var data = cx.getImageData(0, 0, W, H).data;
+        function rowInk(y) {
+          var n = 0;
+          for (var x = 0; x < W; x++) {
+            var i = (y * W + x) * 4;
+            if (data[i] + data[i + 1] + data[i + 2] > 60) n++;
+          }
+          return n;
+        }
+        function colInk(x) {
+          var n = 0;
+          for (var y = 0; y < H; y++) {
+            var i = (y * W + x) * 4;
+            if (data[i] + data[i + 1] + data[i + 2] > 60) n++;
+          }
+          return n;
+        }
+        // 找"墨最多的那一行" —— 那就是地面条。它必须横跨整幅宽度：
+        // 只要渲染被裁剪成一块（视口/裁剪框没跟上物理尺寸），这一行就达不到 90%。
+        var bestY = 0, bestInk = 0;
+        for (var y = 0; y < H; y++) {
+          var ink = rowInk(y);
+          if (ink > bestInk) { bestInk = ink; bestY = y; }
+        }
+        var inkL = colInk(1), inkR = colInk(W - 2);
+        VT.report.pixels = { W: W, H: H, bestY: bestY, bestInk: bestInk, inkL: inkL, inkR: inkR };
+        ok(W === g.canvas.width && H === g.canvas.height, '快照尺寸 = 画布物理像素（' + W + '×' + H + '）');
+        ok(bestInk > W * 0.9, '最宽的那一行（y=' + bestY + '）横跨整幅宽度（' + bestInk + '/' + W + '）', bestInk);
+        ok(bestY > H * 0.5, '最宽的那一行在下半屏（地面/地板，y=' + bestY + '/' + H + '）', bestY);
+        ok(inkL > 0 && inkR > 0, '最左列与最右列都有内容（' + inkL + ' / ' + inkR + '）');
+        finish();
+      });
+    } catch (e) {
+      log('  快照失败：' + e, 'bad');
+      finish();
+    }
+  }
+
+  function finish() {
+    lines.push('');
+    log(fail === 0 ? ('全部通过：' + pass + ' 项') : ('通过 ' + pass + ' 项，失败 ' + fail + ' 项'),
+      fail === 0 ? 'ok' : 'bad');
+    VT.report.pass = pass; VT.report.fail = fail;
+    window.__dprDone = true;
+  }
+
+  window.addEventListener('load', boot);
+  setTimeout(boot, 300);
+})();
+</script>
+</body>
+</html>

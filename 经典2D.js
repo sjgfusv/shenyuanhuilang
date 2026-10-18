@@ -287,6 +287,10 @@
     }
     // ② ⚠️ 比的是 **canvas host** 而不是 stage：stage 里还有标题条（.trial2d-stage-head），
     //    高度天然比画布大，拿它比会每帧都判定"不匹配"、等于没优化掉每帧 refresh。
+    // ③ ⚠️ 比的是 **scale.width（逻辑尺寸）**：引擎的高密度屏适配只放大画布的
+    //    **后备像素**（canvas.width = 逻辑 × 设备像素比），而 scale.width 报的仍然是
+    //    逻辑尺寸 = host 的 clientWidth —— 所以这里与旧版一致，直接和 host 比。
+    //    （不要再改成比 canvas.width：那是物理像素，永远不等于 host 的 CSS 宽度。）
     var w = host.clientWidth, h = host.clientHeight;
     if (!(w > 0) || !(h > 0)) return;
     if (Math.abs((gg.scale.width || 0) - w) > 1 || Math.abs((gg.scale.height || 0) - h) > 1) {
@@ -590,6 +594,8 @@
     // --- 难度修正（与内核 startCombat 的 modifier 同源）---
     var mods = null;
     try { mods = k.difficultyModifiers(); } catch (e) { mods = null; }
+    // 本档的难度行：内置难度与自定义都要用它取 enemyAi（见下面 return）
+    var diffRow = (mods && mods[s.difficulty]) || (mods && mods.normal) || {};
     var hpMul = 1, atkMul = 1, growth = 1;
     if (s.difficulty === 'custom') {
       try {
@@ -606,14 +612,17 @@
         }
       } catch (e) { /* 归一化失败就用默认倍率 */ }
     } else {
-      var m = (mods && mods[s.difficulty]) || (mods && mods.normal) || {};
-      hpMul = m.enemyHp || 1;
-      atkMul = m.enemyAtk || 1;
+      hpMul = diffRow.enemyHp || 1;
+      atkMul = diffRow.enemyAtk || 1;
     }
 
     // --- 经典量级（内核 startCombat 的 tier 表）---
-    var base = floor * 2 + 4;
-    var half = Math.floor(floor / 2);
+    // v2.8 全面加强：两条曲线都提了斜率，修的是「后期的怪跟不上玩家成长」——
+    // 原来 base 只有 floor×2+4，玩家攻击一涨，前期怪和后期怪就都是两三刀的事。
+    //   HP ：floor×2+4   → floor×2.5+5   （第 1 层 6→8，第 50 层 104→130）
+    //   ATK：floor÷2     → floor×0.62    （第 10 层 5→6，第 50 层 25→31）
+    var base = floor * 2.5 + 5;
+    var half = Math.round(floor * 0.62);
     var tier = info.tier || 'normal';
     var hpBase, atkBase;
     if (tier === 'boss') { hpBase = base + 10; atkBase = 5 + half; }
@@ -635,7 +644,20 @@
 
     return {
       hp: Math.min(99999, Math.max(1, Math.round(hpBase * kHp * hpMul * growth))),
-      atk: Math.min(200, Math.max(1, Math.round(atkBase * kAtk * atkMul * growth)))
+      atk: Math.min(200, Math.max(1, Math.round(atkBase * kAtk * atkMul * growth))),
+      // AI 倍率包（更主动的那一层加强）。引擎拿到后换一份 def 副本，
+      // 于是移速 / 前摇 / 后摇 / 索敌全都跟着难度走 —— 见 战斗2D.js 的 boostEnemyDef。
+      // 上限 1.5：索敌太远会让怪隔着半个房间就冲过来，"一个一个引"的节奏就没了。
+      ai: (function () {
+        var a = diffRow.enemyAi;
+        if (!a) return null;
+        return {
+          speed: a.speed || 1,
+          windup: a.windup || 1,
+          recover: a.recover || 1,
+          detect: Math.min(1.5, a.detect || 1)
+        };
+      })()
     };
   }
 
@@ -653,38 +675,58 @@
      P3 按规划 §3.4 重做 24 件时会替换这张表。
      ============================================================ */
   /* ============================================================
-     遗物池（24 件 · 规划 §3.4）
+     遗物池（A 项「遗物构筑化」）
      ------------------------------------------------------------
-     每一件都挂在引擎**已经存在**的机制上：数值型由引擎的 applyMechRelics 写回
-     机制常量，行为型由 hasPerk 在各个钩子里生效（图腾 / 轮盘 / 护盾共鸣 / 斩杀线）。
-     内核的 state.relics 只存 { id, label, quality, description } —— 效果一律由引擎
-     消费。好处是存档里不再有函数，也就没有"读档后 apply 变 undefined"的老毛病。
+     与引擎的 RELIC_FX 一一对应：这里放 label / 品质 / **流派** / 卡片文案，
+     引擎放实际效果。改造要点：
+       · 每条 desc 都写清**条件**（什么时候生效）与**同流派搭配** ——
+         玩家在三选一卡片上就能看出"这件是往哪个方向堆"
+       · school 决定卡片上的流派标签，是"我正在凑哪一套"的唯一提示
+       · 新增 3 件连携流（连携之心 / 不屈意志 / 回响精通）：不是为了加数量，
+         而是因为连携是本次新增的资源，**必须**有遗物能围绕它构筑，
+         否则它就是一条没有深度的孤立机制
+     流派：blood 血怒 / perfect 完美 / link 连携 / greed 贪婪（空串 = 通用）
      ============================================================ */
+  /** 流派显示名：三选一卡片的短标签用它（品质已由卡片配色表达） */
+  var SCHOOL_NAME = { blood: '血怒', perfect: '完美', link: '连携', greed: '贪婪' };
+
   var RELIC_POOL = [
-    { id: 'lightBoots',      label: '轻盈之靴', quality: 'common',    desc: '体力上限 +30，停手回复 +30%' },
-    { id: 'windShadow',      label: '疾风残影', quality: 'rare',      desc: '闪避无敌帧 +120ms，冲刺距离 +15%' },
-    { id: 'perfectInstinct', label: '完美直觉', quality: 'rare',      desc: '完美闪避窗口 +80ms，锐利持续 +2s' },
-    { id: 'airFeather',      label: '滞空之羽', quality: 'rare',      desc: '空中闪避保留的坠速更小（滞空更久）' },
-    { id: 'ironWall',        label: '铁壁',     quality: 'common',    desc: '完美格挡窗口 +80ms' },
-    { id: 'counterBlade',    label: '反击之刃', quality: 'rare',      desc: '盾反伤害 ×2 → ×3，盾反回 3 护盾' },
-    { id: 'thornHeart',      label: '荆棘之心', quality: 'rare',      desc: '被命中时反弹更多伤害' },
-    { id: 'shieldResonance', label: '护盾共鸣', quality: 'common',    desc: '任何来源获得的护盾额外 +2' },
-    { id: 'immortalTotem',   label: '不朽图腾', quality: 'legendary', desc: '致命伤保留 1 血，每层一次' },
-    { id: 'furyBlood',       label: '狂热之血', quality: 'common',    desc: '狂怒获取 +25%' },
-    { id: 'desperateStrike', label: '破釜沉舟', quality: 'rare',      desc: '生命 ≤50% 时伤害 +25%' },
-    { id: 'chainMaster',     label: '连击大师', quality: 'rare',      desc: '连招窗口 +250ms，第 3 段横扫 +50%' },
-    { id: 'executioner',     label: '处决者',   quality: 'rare',      desc: '斩杀线 +10%' },
-    { id: 'huntMark',        label: '猎杀标记', quality: 'legendary', desc: '斩杀线提升至 50%' },
-    { id: 'bloodThirst',     label: '血之饥渴', quality: 'rare',      desc: '吸血等级 +1' },
-    { id: 'heavyStrike',     label: '重击',     quality: 'common',    desc: '跳劈倍率 +0.4，埋人概率 +12%' },
-    { id: 'trackingCharm',   label: '追踪符',   quality: 'rare',      desc: '远程普攻追踪 +50%，弹速 +10%' },
-    { id: 'piercingArrow',   label: '穿透之矢', quality: 'rare',      desc: '远程普攻穿透 +1' },
-    { id: 'merchantEye',     label: '商人眼光', quality: 'common',    desc: '商店价格 −20%' },
-    { id: 'greedyHeart',     label: '贪婪之心', quality: 'rare',      desc: '金币获取 +35%，受伤 +10%' },
-    { id: 'soulDrinker',     label: '汲魂者',   quality: 'common',    desc: '击杀回复 2 生命' },
-    { id: 'fateWheel',       label: '命运轮盘', quality: 'legendary', desc: '每清一个房间随机 +2~8 金币 或 −1 生命' },
-    { id: 'abyssMark',       label: '深渊印记', quality: 'rare',      desc: '遗物三选一变四选一' },
-    { id: 'sharpCore',       label: '锐利核心', quality: 'legendary', desc: '完美闪避的锐利倍率 2.2 → 3.0' }
+    // ===== 血怒流：主动掉血换输出 =====
+    { id: 'desperateStrike', label: '破釜沉舟', quality: 'rare',      school: 'blood',   desc: '每损失 10% 生命，伤害 +7%（残血最多 +56%）· 与血之饥渴、荆棘之心成套' },
+    { id: 'bloodThirst',     label: '血之饥渴', quality: 'rare',      school: 'blood',   desc: '吸血等级 +1；生命 ≤50% 时吸血翻倍' },
+    { id: 'thornHeart',      label: '荆棘之心', quality: 'rare',      school: 'blood',   desc: '被命中反弹 +3；生命 ≤50% 时反伤翻倍' },
+    { id: 'furyBlood',       label: '狂热之血', quality: 'common',    school: 'blood',   desc: '狂怒获取 +35%；生命 ≤50% 时再 +35%' },
+    { id: 'immortalTotem',   label: '不朽图腾', quality: 'legendary', school: 'blood',   desc: '致命伤保留 1 血（每层一次）· 敢残血作战的前提' },
+    { id: 'soulDrinker',     label: '汲魂者',   quality: 'common',    school: 'blood',   desc: '击杀回复 2 生命；生命 ≤50% 时回复 4' },
+
+    // ===== 完美流：判定窗口与判定收益 =====
+    { id: 'perfectInstinct', label: '完美直觉', quality: 'rare',      school: 'perfect', desc: '完美闪避窗口 +80ms，锐利持续 +2s' },
+    { id: 'ironWall',        label: '铁壁',     quality: 'common',    school: 'perfect', desc: '完美格挡窗口 +80ms' },
+    { id: 'counterBlade',    label: '反击之刃', quality: 'rare',      school: 'perfect', desc: '盾反伤害 ×2 → ×3，盾反回 3 护盾' },
+    { id: 'sharpCore',       label: '锐利核心', quality: 'legendary', school: 'perfect', desc: '完美闪避的锐利倍率 2.2 → 3.0' },
+    { id: 'windShadow',      label: '疾风残影', quality: 'rare',      school: 'perfect', desc: '闪避无敌帧 +120ms，冲刺距离 +15%' },
+
+    // ===== 连携流：新资源（攒 → 选 → 险）的三个旋钮 =====
+    { id: 'linkHeart',       label: '连携之心', quality: 'rare',      school: 'link',    desc: '连携上限 3 → 5，能一口气攒更多' },
+    { id: 'unbroken',        label: '不屈意志', quality: 'legendary', school: 'link',    desc: '挨打时连携只 −1 而非清零 · 与连携之心成套' },
+    { id: 'echoMaster',      label: '回响精通', quality: 'rare',      school: 'link',    desc: '连携招式倍率 1.6 → 2.2' },
+    { id: 'executioner',     label: '处决者',   quality: 'rare',      school: 'link',    desc: '斩杀线 +10%；斩杀成功回 1 连携' },
+    { id: 'heavyStrike',     label: '重击',     quality: 'common',    school: 'link',    desc: '跳劈 +0.4 倍、埋人 +12%；跳劈消耗连携时倍率再 +0.6' },
+
+    // ===== 贪婪流：收益换风险 =====
+    { id: 'greedyHeart',     label: '贪婪之心', quality: 'rare',      school: 'greed',   desc: '金币获取 +60%；受到的伤害 +20%' },
+    { id: 'merchantEye',     label: '商人眼光', quality: 'common',    school: 'greed',   desc: '商店价格 −25%' },
+    { id: 'fateWheel',       label: '命运轮盘', quality: 'legendary', school: 'greed',   desc: '每清一个房间随机 +2~8 金币 或 −1 生命' },
+
+    // ===== 通用 =====
+    { id: 'lightBoots',      label: '轻盈之靴', quality: 'common',    school: '',        desc: '体力上限 +30，停手回复 +30%' },
+    { id: 'airFeather',      label: '滞空之羽', quality: 'rare',      school: '',        desc: '空中闪避保留的坠速更小，且不消耗体力' },
+    { id: 'shieldResonance', label: '护盾共鸣', quality: 'common',    school: '',        desc: '任何来源获得的护盾 +2；完美格挡额外 +3' },
+    { id: 'chainMaster',     label: '连击大师', quality: 'rare',      school: '',        desc: '连招窗口 +250ms，第 3 段横扫 +50%' },
+    { id: 'huntMark',        label: '猎杀标记', quality: 'legendary', school: '',        desc: '斩杀线提升至 50%' },
+    { id: 'trackingCharm',   label: '追踪符',   quality: 'rare',      school: '',        desc: '远程普攻追踪 +50%，弹速 +10%' },
+    { id: 'piercingArrow',   label: '穿透之矢', quality: 'rare',      school: '',        desc: '远程普攻穿透 +1' },
+    { id: 'abyssMark',       label: '深渊印记', quality: 'rare',      school: '',        desc: '遗物三选一变四选一' }
   ];
 
   var RELIC_BY_ID = {};
@@ -829,7 +871,10 @@
       cards: choices.map(function (r, i) {
         return {
           id: String(i), name: r.label, desc: r.desc,
-          quality: r.quality, tag: QUALITY_TAG[r.quality] || '强化'
+          quality: r.quality,
+          // 有流派的优先显示流派（品质已由卡片配色承担），没流派的退回原来的品质标签。
+          // 这一格标签是"我正在凑哪一套"在界面上唯一的提示，所以让给流派。
+          tag: (r.school && SCHOOL_NAME[r.school]) ? (SCHOOL_NAME[r.school] + '流') : (QUALITY_TAG[r.quality] || '强化')
         };
       }),
       actions: [{ id: 'skip', label: '跳过（+20 金币）' }]
@@ -1131,8 +1176,67 @@
         if (s) s.heroSkillUsed = !!used;
       },
       rewardPreview: function () { return null; },
-      /** HUD「更多」按钮：打开侧边栏（第 7 / 8 / 11 条） */
+      /**
+       * 打开 DOM 侧边栏
+       * v2.8 起 HUD 上不再有「更多」按钮（它和「退出」合并成了「菜单」），
+       * 所以这里已无引擎调用点 —— 保留是因为开始界面 / 文字界面仍在用同一套侧边栏，
+       * 而宿主内部的任何入口都可以继续走它。
+       */
       openMenu: function () { return openSidePanel(); },
+      /**
+       * 画布菜单里的系统功能 → 打开对应的 DOM 面板
+       * ------------------------------------------------------------
+       * 引擎只传一个 id（它不认识"作弊面板"这类业务语义），由宿主决定开哪个、怎么开。
+       * 这里**直接调宿主自己的函数**，而不是去 click 侧边栏那些按钮：
+       * 那些按钮的处理器里都夹着"先收侧边栏"的动作，而从画布菜单过来时
+       * 根本没有侧边栏需要收 —— 复用处理器会把一个不相关的副作用带进来。
+       *
+       * 战斗的冻结 / 解冻不用这边管：面板一开，anyDomPanelOpen() 就为真，
+       * watchDomPanels() 挂上的观察器会在**全部关干净**之后才解冻
+       * （于是"菜单 → 设置 → 从设置里开按键编辑器"这种连续切换不会中途放回战斗）。
+       */
+      openPanel: function (id) {
+        var fn = null;
+        switch (id) {
+          case 'condition': fn = global.openConditionsModal; break;
+          case 'codex': fn = global.openEncyclopediaModal; break;
+          case 'tutorial': fn = global.startTutorial; break;
+          case 'settings': fn = global.openSettingsModal; break;
+          case 'save': fn = global.openSaveManager; break;
+          case 'cheat': fn = global.openCheatModal; break;
+          // 切老版会直接跳转页面，不需要冻结（跳走了就没有战斗要停）
+          case 'legacy': return switchToLegacy();
+          default: return false;
+        }
+        if (typeof fn !== 'function') return false;
+        // ⚠️ 必须**先冻结再打开**。DOM 面板的显示靠一次 class 切换，而观察器是
+        //    异步回调的：等它发现面板开了，中间已经过去若干帧 —— 那几帧里敌人
+        //    照样在打你，而玩家以为画面已经暂停了。
+        //    先冻住之后，观察器只会负责"全部关干净才解冻"的另一半。
+        freezeForDomPanel();
+        try {
+          fn();
+          return true;
+        } catch (e) {
+          warn('[菜单] 打开面板失败（' + id + '）：', e);
+          return false;
+        }
+      },
+      /**
+       * 菜单里改难度
+       * ------------------------------------------------------------
+       * 与侧边栏那个下拉**同一条路径**：驱动顶栏 #difficultySelect 走它原有的
+       * change 处理器。"难度怎么变"只有一个实现，两边不可能漂移。
+       * 改完引擎的 difficulty 会由既有的难度签名比对自动跟上（不用这里手动推）。
+       */
+      setDifficulty: function (v) {
+        var sel = document.getElementById('difficultySelect');
+        if (!sel || !v) return false;
+        if (sel.value === v) return true;      // 已经是这个难度：算成功，不重复触发
+        sel.value = v;
+        sel.dispatchEvent(new Event('change'));
+        return true;
+      },
       /**
        * 图鉴补充数据（遗物 / 商品 / 增益 / 事件）
        * ------------------------------------------------------------
@@ -1145,7 +1249,11 @@
         var out = { relics: [], shop: [], bonus: [], events: [] };
         try {
           out.relics = RELIC_POOL.map(function (r) {
-            return { name: r.label, quality: QUALITY_NAME[r.quality] || r.quality, desc: r.desc };
+            return {
+              name: r.label, quality: QUALITY_NAME[r.quality] || r.quality, desc: r.desc,
+              // 图鉴里也带上流派：不然玩家看不出"这套遗物是往哪个方向堆的"
+              school: SCHOOL_NAME[r.school] || ''
+            };
           });
         } catch (e) { /* 忽略 */ }
         try { out.shop = k.shopCatalog() || []; } catch (e) { /* 忽略 */ }
@@ -1157,21 +1265,19 @@
   }
 
   /* ============================================================
-     2D 画面里的 DOM 功能入口（第 7 / 8 / 11 条）
+     2D 画面里的 DOM 面板调度 + 停战 / 复战
      ------------------------------------------------------------
-     用户要求："在 2D 画面中把侧边栏也做成和文字界面那些一样的按钮（文字界面不变）"，
-     并选定用 **DOM 覆盖层**（而不是把面板在画布上重画一遍）。
+     v2.8 起侧边栏那批功能**画进了画布内的「菜单」界面**（见 战斗2D.js 的
+     buildPauseLayer / menuFunctionGrid）。引擎不认识"作弊面板"这类业务语义，
+     只把一个 id 交给 bridge.openPanel，由这里决定开哪个、怎么开 ——
+     "引擎只画界面，宿主管业务"的边界没有破。
 
-     落到代码上就是**不新增第二套 UI**：直接复用文字界面那套 `#sidebar`
-     （作弊 / 通关条件 / 图鉴 / 教程 / 存档管理 / 难度 / 切换老版 2.6）。
-     它的 z-index（100002）本来就高于画布（9000），画布从来就盖不住它 ——
-     之前"用不了"只是因为**没有入口**：右下角的 ☰ 被实时战斗隐藏了
-     （`body.realtime-trial .sidebar-toggle { display:none }`，因为它压住攻击键）。
-     所以这里补一个引擎 HUD 里的「更多」按钮，经 bridge.openMenu 回调过来。
+     侧边栏本体（`#sidebar`）保留：开始界面 / 文字界面照旧用它，
+     它的 z-index（100002）本来就高于画布（9000）。
 
      冻结：侧边栏 / 任何 DOM 模态框打开期间必须停住战斗，否则玩家在调设置时
      会被看不见的敌人打死。统一用 anyDomPanelOpen() 判定，**关干净了才恢复** ——
-     这样"侧边栏 → 点作弊 → 侧边栏关、作弊面板开"这种连续切换不会中途把战斗放回去。
+     这样"菜单 → 点设置 → 从设置里开按键编辑器"这种连续切换不会中途把战斗放回去。
      ============================================================ */
   var DOM_MODAL_IDS = [
     'saveManagerModal', 'conditionsModal', 'encyclopediaModal', 'changelogModal',
@@ -1192,7 +1298,7 @@
     return false;
   }
 
-  /** 打开侧边栏（引擎 HUD 的「更多」）。返回 true = 已消费 */
+  /** 打开侧边栏（v2.8 起画布内已无入口，改由开始界面 / 文字界面使用） */
   function openSidePanel() {
     if (!sidebarEl()) return false;
     if (!global.sidebar || typeof global.sidebar.open !== 'function') return false;
@@ -1203,9 +1309,29 @@
     } catch (e) { return false; }
   }
 
+  /**
+   * 切到 2.6 老版（画布菜单里的「切换老版 2.6」）
+   * ------------------------------------------------------------
+   * 与侧边栏那颗同名按钮**同一套语义**：先存一次盘再跳走，否则这一次切换
+   * 会把当前进度丢掉。也特意不用 confirm —— 系统对话框会把页面顶出全屏，
+   * 破坏实时战斗的横屏 / 全屏状态。老版是 老版2.6/ 下一份完整独立的快照，
+   * 两版存档互相隔离（见 主程序.js 的 migrateFromLegacyNamespace）。
+   */
+  function switchToLegacy() {
+    try {
+      var s = S();
+      if (s && s.mode && s.mode !== 'start' && typeof global.saveGame === 'function') {
+        global.saveGame();
+      }
+    } catch (e) { /* 存不上也让玩家走，总比卡在原地强 */ }
+    try {
+      global.location.href = '老版2.6/主界面.html';
+      return true;
+    } catch (e2) { return false; }
+  }
+
   /** 冻结战斗并挂上"关干净才恢复"的观察器 */
-  function freezeForDomPanel() {
-    watchDomPanels();
+  function freezeForDomPanel() {    watchDomPanels();
     var e = engine();
     if (e && typeof e.freezeForDom === 'function') {
       try { e.freezeForDom(); } catch (err) { /* 忽略 */ }
@@ -2135,10 +2261,10 @@
     start: function () { return startRun(false); },
     syncPoints: syncPoints,
 
-    /** 遗物池（24 件）—— 内核图鉴直接读它，避免"图鉴手抄一份、迟早和实现漂移" */
+    /** 遗物池 —— 内核图鉴直接读它，避免"图鉴手抄一份、迟早和实现漂移" */
     relicPool: function () {
       return RELIC_POOL.map(function (r) {
-        return { id: r.id, label: r.label, quality: r.quality, desc: r.desc };
+        return { id: r.id, label: r.label, quality: r.quality, desc: r.desc, school: r.school || '', schoolName: SCHOOL_NAME[r.school] || '' };
       });
     },
     /** 诅咒分级（轻 / 重）—— 同上，图鉴用它而不是自己再列一份 */
@@ -2552,15 +2678,24 @@
     });
   } catch (e) { /* 忽略 */ }
 
-  /* Esc = 暂停菜单（与 HUD 的「结束本局」走同一个入口，行为一致） */
+  /* Esc = 菜单开关（与 HUD 的「菜单」按钮走同一个入口，行为一致）
+     ------------------------------------------------------------
+     再按一次要能关掉：Esc 在任何一个界面里都是"退回去"，只开不关的话
+     玩家按 Esc 之后还得去找按钮，键盘操作就成了半截。
+     ⚠️ 只对**画布菜单**做这件事：商店 / 图鉴 / 地图 / 撤离确认这些画内面板
+        各有自己的关闭语义（有的要确认、有的要读档），在这里替它们做决定
+        会把"取消"变成"误关"。 */
   try {
     document.addEventListener('keydown', function (ev) {
       if (!running) return;
       if (ev.key !== 'Escape' && ev.key !== 'Esc') return;
       var en = engine();
-      if (en && typeof en.openPauseMenu === 'function' && en.openPauseMenu()) {
-        ev.preventDefault();
+      if (!en || typeof en.openPauseMenu !== 'function') return;
+      if (typeof en.isPaused === 'function' && en.isPaused()) {
+        if (typeof en.closePauseMenu === 'function' && en.closePauseMenu()) ev.preventDefault();
+        return;
       }
+      if (en.openPauseMenu()) ev.preventDefault();
     });
   } catch (e) { /* 忽略 */ }
 

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>DPR 方案实验台 · 深渊回廊</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #07070f; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas { display: block; }
+  #panel {
+    position: fixed; left: 8px; top: 8px; z-index: 10;
+    font: 12px/1.6 ui-monospace, Consolas, monospace; color: #9fe0c0;
+    background: rgba(6,8,16,0.82); border: 1px solid rgba(115,240,180,0.25);
+    border-radius: 8px; padding: 8px 10px; max-width: 48vw; white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="panel">加载中…</div>
+<script src="../vendor/phaser.min.js"></script>
+<script>
+/* ============================================================
+   DPR 方案实验台 v2（与游戏逻辑完全隔离）
+
+   ⚠️⚠️ 本页的结论已**被推翻**，只留作历史对照，不要照着它做设计。
+        2026/10 复核：下面"投影=逻辑 → 世界只占物理缓冲一角"不是投影的问题，
+        而是**相机裁剪矩形（scissor）**还停在逻辑尺寸上；把 scissor 换成整张画布
+        物理像素之后，"投影=逻辑 + 视口=物理"完全成立 —— 这就是最终采用的方案
+        （游戏代码一行都不用改）。正确机理与验证见：
+          测试/dpi解耦验证台.html    —— 机理实验台（readPixels 逐像素）
+          测试/高密度屏验证.html    —— 真实引擎 19 项断言（DPR 1/1.25/2/3）
+          其他/交接-2D高分屏适配.md —— 结论与实现索引
+
+   ------------------------------------------------------------
+   已验证的机理（本页逐格实测得出，不要再试回去）：
+     · 接点只能是 ScaleManager.updateScale —— create() 里改 canvas 尺寸
+       会被随后的 updateScale 覆盖（实测像素密度始终 1.000）。
+     · Phaser 3 把「投影尺寸 = 相机视口尺寸 = 世界坐标空间」绑成同一个量：
+         投影=物理 → 世界坐标被放大 DPR 倍、推出画面；
+         投影=逻辑 → 世界只占物理缓冲的一角。
+     · camera.zoom 不能用来补，它同样作用于 scrollFactor=0 的 HUD。
+
+   本页因此按「对象在什么坐标系里创建」来分档，而不是只改渲染参数：
+     PS = 1  对象按逻辑坐标建   （现有游戏的做法）
+     PS = DPR 对象按物理坐标建  （唯一自洽的提密度形态）
+
+   用法：?mode=xxx&dpr=2
+     raw            基线：完全不处理 DPR
+     canvas-only    只改 canvas 尺寸（已证伪）
+     quarter-buffer 投影/相机保持逻辑 + 物理缓冲（已证伪）
+     phys-render    物理渲染管线，但对象仍按逻辑坐标建（预期：错位）
+     phys-coords    物理渲染管线 + 对象按物理坐标建（决定性验证）
+   ============================================================ */
+(function () {
+  var Q = new URLSearchParams(location.search);
+  var MODE = Q.get('mode') || 'raw';
+  var DPR = parseFloat(Q.get('dpr') || '') || window.devicePixelRatio || 1;
+
+  // 渲染管线是否走物理尺寸（决定 updateScale 与相机）
+  var PHYS_RENDER = (MODE === 'phys-render' || MODE === 'phys-coords');
+  // 对象在哪个坐标系里创建
+  var PS = (MODE === 'phys-coords') ? DPR : 1;
+  // 渲染放大时的插值方式：Phaser 在 antialias:false 时会写 pixelated（最近邻，
+  // 放大会出现方块）；smooth 档改成平滑插值做对比。
+  var SMOOTH = Q.get('smooth') === '1';
+  if (SMOOTH) {
+    var st = document.createElement('style');
+    st.textContent = '#stage canvas{image-rendering:auto !important;}';
+    document.head.appendChild(st);
+  }
+
+  var host = document.getElementById('stage');
+  var logEl = document.getElementById('panel');
+  var L = function (m) { console.log('[DPR实验台] ' + m); };
+  L('启动 mode=' + MODE + ' dpr=' + DPR + ' PS=' + PS + ' PHYS_RENDER=' + PHYS_RENDER);
+
+  var game = new Phaser.Game({
+    type: Phaser.AUTO,
+    parent: host,
+    width: Math.max(1, host.clientWidth),
+    height: Math.max(1, host.clientHeight),
+    backgroundColor: '#07070f',
+    scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.NO_CENTER },
+    render: { antialias: false, pixelArt: true, roundPixels: false },
+    audio: { noAudio: true },
+    scene: { create: create }
+  });
+
+  var sys = null, label = null;
+
+  function create() {
+    sys = this;
+    var W = Math.max(1, Math.round(host.clientWidth));
+    var H = Math.max(1, Math.round(host.clientHeight));
+
+    // ---------- 世界内容：一律用 PS 换算，保证「视觉尺寸」与基线一致 ----------
+    var g = this.add.graphics();
+    g.lineStyle(1, 0x2b3350, 1);
+    for (var x = 0; x <= W * PS; x += 50 * PS) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H * PS); g.strokePath(); }
+    for (var y = 0; y <= H * PS; y += 50 * PS) { g.beginPath(); g.moveTo(0, y); g.lineTo(W * PS, y); g.strokePath(); }
+
+    // 矩形：CSS 屏幕坐标 (100,100) 起，120×80 —— 与基线逐像素可比
+    this.add.rectangle(100 * PS, 100 * PS, 120 * PS, 80 * PS, 0xff3366, 1).setOrigin(0, 0);
+    this.add.rectangle(300 * PS, 100 * PS, 120 * PS, 80 * PS, 0x33ff66, 1).setOrigin(0, 0);
+    this.add.rectangle(500 * PS, 100 * PS, 120 * PS, 80 * PS, 0x3366ff, 1).setOrigin(0, 0);
+
+    // 细线：视觉 1 逻辑像素 / 0.5 逻辑像素
+    var thin = this.add.graphics();
+    thin.lineStyle(1 * PS, 0xffffff, 1);
+    thin.beginPath(); thin.moveTo(100 * PS, 220 * PS); thin.lineTo(900 * PS, 220 * PS); thin.strokePath();
+    thin.lineStyle(0.5 * PS, 0xffffff, 0.9);
+    thin.beginPath(); thin.moveTo(100 * PS, 240 * PS); thin.lineTo(900 * PS, 240 * PS); thin.strokePath();
+
+    // 文字：视觉字号 12 / 11 逻辑像素
+    this.add.text(100 * PS, 270 * PS, '世界文字 12px ABCDEFGH 0123456789',
+      { fontSize: (12 * PS) + 'px', color: '#efe8ff' });
+    this.add.text(100 * PS, 292 * PS, '世界文字 11px 缩放会糊吗',
+      { fontSize: (11 * PS) + 'px', color: '#a99fd0' });
+
+    // 屏幕固定文字（HUD 同类）：基线在屏幕 (400,400)
+    label = this.add.text(400 * PS, 400 * PS, '', { fontSize: (13 * PS) + 'px', color: '#73f0b4' })
+      .setScrollFactor(0);
+
+    if (PHYS_RENDER) {
+      var sc = game.scale, c = game.canvas;
+      sc.updateScale = function () {
+        var pw = Math.max(1, Math.round(this.parentSize.width * DPR));
+        var ph = Math.max(1, Math.round(this.parentSize.height * DPR));
+        this.gameSize.setSize(pw, ph);
+        this.baseSize.setSize(pw, ph);
+        this.displaySize.setSize(this.parentSize.width, this.parentSize.height);
+        this.canvas.width = pw;
+        this.canvas.height = ph;
+        this.canvas.style.width = this.parentSize.width + 'px';
+        this.canvas.style.height = this.parentSize.height + 'px';
+      };
+      sc.refresh();
+      // 相机必须跟着物理尺寸（投影=相机视口=世界空间）
+      this.cameras.main.setSize(Math.round(W * DPR), Math.round(H * DPR));
+    } else if (MODE === 'sim-mobile') {
+      // 专门用来模拟"手机上被浏览器放大"观感的档：
+      // 画布按逻辑像素渲染，但显示尺寸压到一半 —— 等价于 2× 放大。
+      // 配合 ?smooth=1 就能直接对比「最近邻（块）」与「平滑（糊）」。
+      var c3 = game.canvas;
+      c3.width = W; c3.height = H;
+      c3.style.width = (W / 2) + 'px';
+      c3.style.height = (H / 2) + 'px';
+    } else if (MODE === 'canvas-only' || MODE === 'quarter-buffer') {
+      var c2 = game.canvas, r2 = game.renderer;
+      c2.width = W * DPR; c2.height = H * DPR;
+      c2.style.width = W + 'px'; c2.style.height = H + 'px';
+      if (MODE === 'quarter-buffer') {
+        r2.width = W; r2.height = H;
+        r2.setProjectionMatrix(W, H);
+        r2.gl.viewport(0, 0, W * DPR, H * DPR);
+        r2.drawingBufferHeight = H * DPR;
+      }
+    }
+
+    report();
+  }
+
+  function report() {
+    var sc = game.scale, r = game.renderer, c = game.canvas;
+    var cam = sys && sys.cameras && sys.cameras.main;
+    var lines = [
+      'mode     = ' + MODE + '  (dpr=' + DPR + ', 对象坐标系数 PS=' + PS + ')',
+      'scale.w  = ' + (sc.width | 0) + 'x' + (sc.height | 0),
+      'canvas   = ' + c.width + 'x' + c.height + '  css=' + c.clientWidth + 'x' + c.clientHeight,
+      'renderer = ' + r.width + 'x' + r.height + '  proj=' + (r.projectionWidth | 0) + 'x' + (r.projectionHeight | 0),
+      'GL视口   = ' + (r.gl ? r.gl.getParameter(r.gl.VIEWPORT).join(',') : 'n/a'),
+      'GL缓冲   = ' + (r.gl ? (r.gl.drawingBufferWidth + 'x' + r.gl.drawingBufferHeight) : 'n/a'),
+      '相机     = ' + (cam ? (cam.width | 0) + 'x' + (cam.height | 0) : 'n/a'),
+      '图像渲染 = ' + getComputedStyle(c).imageRendering,
+      '像素密度 = ' + (c.clientWidth ? (c.width / c.clientWidth).toFixed(3) : 'n/a'),
+      '',
+      '判据：像素密度 = ' + DPR + ' 且 画面铺满 且 三色矩形在左上 (100,100)/120x80'
+    ];
+    logEl.innerHTML = lines.join('\n');
+    if (label) label.setText('scrollFactor=0 文字｜' + MODE + '｜密度 ' +
+      (c.clientWidth ? (c.width / c.clientWidth).toFixed(2) : '?'));
+  }
+
+  window.__repro = { report: report, game: function () { return game; } };
+  setTimeout(report, 60);
+})();
+</script>
+</body>
+</html>

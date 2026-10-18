@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>DPI 解耦方案验证台 · 深渊回廊</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #101018; overflow: hidden; }
+  #stage { position: fixed; left: 0; top: 0; width: 800px; height: 360px; }
+  #stage canvas { display: block; }
+  #panel {
+    position: fixed; right: 8px; top: 8px; z-index: 10;
+    font: 12px/1.55 ui-monospace, Consolas, monospace; color: #9fe0c0;
+    background: rgba(6,8,16,0.88); border: 1px solid rgba(115,240,180,0.25);
+    border-radius: 8px; padding: 8px 10px; white-space: pre; max-height: 96vh; overflow: auto;
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="panel">加载中…</div>
+<script src="../vendor/phaser.min.js"></script>
+<script>
+/* ============================================================
+   假设：Phaser 的投影矩阵是**全局一份**（正交 0..W,0..H），相机只贡献
+   「矩阵（含 zoom）+ 裁剪矩形」两项。因此"提高密度"可以只做三件事：
+     ① canvas 后备像素 = 逻辑尺寸 × D，CSS 尺寸 = 逻辑尺寸；
+     ② renderer 投影 = 逻辑尺寸，GL 视口 = 物理尺寸；
+     ③ 相机裁剪矩形 = 物理尺寸（默认是相机尺寸=逻辑，会被裁掉一块）。
+   若成立：所有游戏代码（世界坐标、HUD 坐标、相机跟随、输入）都留在逻辑
+   坐标系里不用动，DPR=1 时三者相等 = 零行为差异。
+
+   本页只做测量，不改游戏任何文件。
+   用法：?mode=raw|decouple&d=2&w=800&h=360&aa=1
+   ============================================================ */
+(function () {
+  var Q = new URLSearchParams(location.search);
+  var MODE = Q.get('mode') || 'decouple';
+  var D = parseFloat(Q.get('d') || '1');
+  var LW = Math.round(parseFloat(Q.get('w') || '800'));
+  var LH = Math.round(parseFloat(Q.get('h') || '360'));
+  var AA = Q.get('aa') !== '0';
+
+  var host = document.getElementById('stage');
+  host.style.width = LW + 'px';
+  host.style.height = LH + 'px';
+  var logEl = document.getElementById('panel');
+
+  var game = new Phaser.Game({
+    type: Phaser.WEBGL,
+    parent: host,
+    width: LW,
+    height: LH,
+    backgroundColor: '#101018',
+    scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.NO_CENTER },
+    render: { antialias: AA, pixelArt: !AA, preserveDrawingBuffer: true },
+    audio: { noAudio: true },
+    scene: { create: create }
+  });
+
+  var sys = null, marks = {};
+
+  function create() {
+    sys = this;
+    // 标记 1：绿色实心矩形，逻辑 (100,100) 120×80
+    var g = this.add.graphics();
+    g.fillStyle(0x00ff00, 1); g.fillRect(100, 100, 120, 80);
+    // 标记 2：红色 1 逻辑像素横线，y=50，x 50..750
+    g.lineStyle(1, 0xff0000, 1);
+    g.beginPath(); g.moveTo(50, 50); g.lineTo(750, 50); g.strokePath();
+    // 标记 3：蓝色 16×16 图标纹理，显示在逻辑 (400,250)
+    var ig = this.make.graphics({ add: false });
+    ig.lineStyle(2, 0xffffff, 1); ig.strokeRect(1, 1, 14, 14);
+    ig.generateTexture('probe16', 16, 16);
+    var ic = this.add.image(400, 250, 'probe16').setOrigin(0, 0);
+    ic.setTint(0x3388ff);
+    // 标记 4：文字（黑色背景上白字），逻辑 (100,200) 14px
+    var t = this.add.text(100, 200, 'ABCD 文字探针 14px', { fontSize: '14px', color: '#ffffff' });
+    marks.txt = t; marks.icon = ic; marks.rect = { x: 100, y: 100, w: 120, h: 80 };
+
+    if (MODE === 'decouple') applyDecouple();
+    if (MODE === 'decouple2') applyDecouple2();
+    // 首帧后再测（尺寸/投影都在首帧前就位）
+    setTimeout(function () { sys.events.once('postrender', probe); setTimeout(probe, 120); }, 80);
+  }
+
+  function applyDecouple() {
+    var sc = game.scale, r = game.renderer, cv = game.canvas;
+    var physW = Math.round(LW * D), physH = Math.round(LH * D);
+
+    // ① updateScale 输出物理尺寸（ScaleManager 原本按 CSS 像素写 canvas.width）
+    sc.updateScale = function () {
+      var pw = Math.max(1, Math.round(this.parentSize.width * D));
+      var ph = Math.max(1, Math.round(this.parentSize.height * D));
+      this.gameSize.setSize(pw, ph);
+      this.baseSize.setSize(pw, ph);
+      this.displaySize.setSize(this.parentSize.width, this.parentSize.height);
+      this.canvas.width = pw;
+      this.canvas.height = ph;
+    };
+    sc.refresh();
+    // CSS 显示尺寸钉回逻辑尺寸（1 个 CSS 像素 = D 个物理像素，正好 1:1）
+    cv.style.width = LW + 'px';
+    cv.style.height = LH + 'px';
+
+    // ② 投影 = 逻辑，视口 = 物理
+    r.setProjectionMatrix(LW, LH);
+    var gl = r.gl;
+    gl.viewport(0, 0, physW, physH);
+    r.drawingBufferHeight = gl.drawingBufferHeight;
+    r.defaultScissor[2] = physW;
+    r.defaultScissor[3] = physH;
+
+    // ③ 相机裁剪矩形 = 物理（相机自身尺寸/zoom 保持逻辑，跟随/边界全都不用动）
+    var origPRC = r.preRenderCamera.bind(r);
+    r.preRenderCamera = function (cam) {
+      var sw = cam.width, sh = cam.height, sx = cam.x, sy = cam.y;
+      cam.x = 0; cam.y = 0; cam.width = physW; cam.height = physH;
+      origPRC(cam);
+      cam.width = sw; cam.height = sh; cam.x = sx; cam.y = sy;
+    };
+    // 相机尺寸 = 逻辑（与 scale.width 同口径）
+    sys.cameras.main.setSize(LW, LH);
+    sys.cameras.main.setZoom(1);
+  }
+
+  /* 生产版接法：**除画布后备像素与 GL 视口外，Phaser 的一切都保持逻辑口径**
+     —— gameSize/baseSize/displaySize/相机/指针换算全是 Phaser 原装行为，
+     只把 canvas.width/height 放大 D 倍，再把 GL 视口与相机裁剪矩形放到物理尺寸。
+     投影矩阵本来就是 renderer.resize(逻辑尺寸) 写的，正好就是要的那一份。 */
+  function applyDecouple2() {
+    var sc = game.scale, r = game.renderer, cv = game.canvas;
+    var physW = Math.round(LW * D), physH = Math.round(LH * D);
+
+    // ① 画布后备像素 = 逻辑 × D（其余口径与原生 RESIZE 完全一致）
+    sc.updateScale = function () {
+      var pw = Math.max(1, Math.round(this.parentSize.width));
+      var ph = Math.max(1, Math.round(this.parentSize.height));
+      this.displaySize.setSize(pw, ph);
+      this.gameSize.setSize(pw, ph);
+      this.baseSize.setSize(pw, ph);
+      this.canvas.width = Math.round(pw * D);
+      this.canvas.height = Math.round(ph * D);
+    };
+    sc.refresh();
+    cv.style.setProperty('width', LW + 'px', 'important');
+    cv.style.setProperty('height', LH + 'px', 'important');
+
+    // ② 渲染器尺寸=物理（视口/裁剪/清屏全部自洽），投影=逻辑（坐标仍按逻辑铺满画布）
+    var origResize = r.resize.bind(r);
+    r.resize = function (w, h) {
+      var pw = this.canvas.width, ph = this.canvas.height;
+      origResize(pw, ph);
+      this.setProjectionMatrix(w, h);
+    };
+    r.resize(sc.baseSize.width, sc.baseSize.height);
+
+    // ③ 相机裁剪矩形 = 物理（相机自身尺寸/zoom/跟随逻辑一律不动）
+    var origPRC = r.preRenderCamera.bind(r);
+    r.preRenderCamera = function (cam) {
+      var sw = cam.width, sh = cam.height, sx = cam.x, sy = cam.y;
+      cam.x = 0; cam.y = 0; cam.width = this.canvas.width; cam.height = this.canvas.height;
+      origPRC(cam);
+      cam.width = sw; cam.height = sh; cam.x = sx; cam.y = sy;
+    };
+  }
+
+  function bbox(px, w, h, test) {
+    var minX = 1e9, minY = 1e9, maxX = -1, maxY = -1, n = 0;
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var i = (y * w + x) * 4;
+        if (test(px[i], px[i + 1], px[i + 2])) {
+          n++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    // readPixels 原点在左下，翻成"自上而下"的行号
+    if (!n) return null;
+    return { x: minX, y: h - 1 - maxY, w: maxX - minX + 1, h: maxY - minY + 1, n: n };
+  }
+
+  var last = null;
+  function probe() {
+    var r = game.renderer, cv = game.canvas, gl = r.gl, sc = game.scale;
+    var cam = sys.cameras.main;
+    var W = cv.width, H = cv.height;
+    var px = new Uint8Array(W * H * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    var green = bbox(px, W, H, function (rr, gg, bb) { return gg > 150 && rr < 90 && bb < 90; });
+    var red = bbox(px, W, H, function (rr, gg, bb) { return rr > 150 && gg < 90 && bb < 90; });
+    var blue = bbox(px, W, H, function (rr, gg, bb) { return bb > 120 && rr < 120 && gg < 140; });
+    // 画布四角/四边有没有被裁掉的空白带：取每行非背景像素数
+    var rowNonBg = [], colNonBg = [];
+    for (var y = 0; y < H; y++) {
+      var c = 0;
+      for (var x = 0; x < W; x++) { var i = (y * W + x) * 4; if (px[i] + px[i + 1] + px[i + 2] > 40) c++; }
+      rowNonBg.push(c);
+    }
+    for (var xx = 0; xx < W; xx++) {
+      var c2 = 0;
+      for (var yy = 0; yy < H; yy++) { var j = (yy * W + xx) * 4; if (px[j] + px[j + 1] + px[j + 2] > 40) c2++; }
+      colNonBg.push(c2);
+    }
+    var emptyRows = rowNonBg.filter(function (v) { return v === 0; }).length;
+    var emptyCols = colNonBg.filter(function (v) { return v === 0; }).length;
+
+    var f = function (b) { return b ? (b.x + ',' + b.y + ' ' + b.w + 'x' + b.h) : '无'; };
+    var css = function (b) { return b ? ('CSS ' + (b.x / D).toFixed(1) + ',' + (b.y / D).toFixed(1) + ' ' + (b.w / D).toFixed(1) + 'x' + (b.h / D).toFixed(1)) : '无'; };
+    var lines = [
+      'mode=' + MODE + '  D=' + D + '  逻辑=' + LW + 'x' + LH + '  aa=' + AA,
+      '画布物理 = ' + W + 'x' + H + '   CSS = ' + cv.clientWidth + 'x' + cv.clientHeight +
+        '   密度 = ' + (W / (cv.clientWidth || 1)).toFixed(3),
+      'renderer = ' + r.width + 'x' + r.height + '  投影 = ' + r.projectionWidth + 'x' + r.projectionHeight,
+      'GL视口   = ' + (gl ? gl.getParameter(gl.VIEWPORT).join(',') : '-') +
+        '   GL缓冲 = ' + (gl ? gl.drawingBufferWidth + 'x' + gl.drawingBufferHeight : '-'),
+      '相机     = ' + Math.round(cam.width) + 'x' + Math.round(cam.height) + '  zoom=' + cam.zoom +
+        '  scroll=' + Math.round(cam.scrollX) + ',' + Math.round(cam.scrollY),
+      'scale.w  = ' + Math.round(sc.width) + 'x' + Math.round(sc.height) +
+        '  displayScale=' + sc.displayScale.x.toFixed(2) + '  transformX(100)=' + Math.round(sc.transformX(100 + (sc.canvasBounds.left || 0))),
+      '',
+      '绿矩形(物理) ' + f(green) + '   → ' + css(green),
+      '  期望物理   ' + (100 * D) + ',' + (100 * D) + ' ' + (120 * D) + 'x' + (80 * D),
+      '红线(物理)   ' + f(red) + '   → ' + css(red),
+      '  期望物理   y=' + (50 * D) + '  宽=' + (700 * D),
+      '蓝图标(物理) ' + f(blue) + '   → ' + css(blue),
+      '  期望物理   ' + (400 * D) + ',' + (250 * D) + ' ' + (16 * D) + 'x' + (16 * D),
+      '文字 box     ' + (marks.txt ? Math.round(marks.txt.width) + 'x' + Math.round(marks.txt.height) + ' res=' + (marks.txt.style.resolution || 0) : '-'),
+      '',
+      '空行数 = ' + emptyRows + '   空列数 = ' + emptyCols + '  （非 0 说明有被裁掉/没铺满的边）',
+      '非背景像素总数 = ' + rowNonBg.reduce(function (a, b) { return a + b; }, 0)
+    ];
+    logEl.textContent = lines.join('\n');
+    last = { green: green, red: red, blue: blue, emptyRows: emptyRows, emptyCols: emptyCols, W: W, H: H, D: D, mode: MODE };
+    window.__probe = last;
+  }
+
+  window.__game = function () { return game; };
+  window.__reprobe = probe;
+  window.__applyDecouple = applyDecouple;
+})();
+</script>
+</body>
+</html>

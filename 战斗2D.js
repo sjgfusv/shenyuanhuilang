@@ -15,9 +15,9 @@
  *   - 房间地图：每层生成分支网格地图，清空房间后打开地图点击进入下一房间
  *     房间类型：入口 / 普通 / 精英 / 镜像 / Boss / 宝箱 / 祭坛 / 商店 / 休整点 / 随机事件
  *   - 环境主题：按难度切换星雾与火星（简单·白星光 普通·蓝星光 困难·暖色 地狱·红焰）
- *   - 全屏渲染，HUD 绘制在游戏画面内（不使用文字面板）
- *   - 画面内死亡 / 商店 / 文字视图切换：死亡与商店都在 2D 画面中完成，
- *     可随时切到文字界面查看实时数据，或直接退出试炼回到经典冒险
+ *   - 全屏渲染，HUD 全部由 Phaser 画在游戏画面内（不依赖 DOM 文本层）
+ *   - 画面内死亡 / 商店：死亡结算与商店都在 2D 画面中完成，
+ *     结束本局走画面内的「菜单」，新版已没有第二个可切换的视图
  *
  *  属性映射（沿用经典模式养成）：
  *   攻击力 → 挥砍基础伤害      暴击率 → 暴击概率
@@ -35,11 +35,32 @@
   // 常驻功能按钮的中文名（布局编辑器里一颗按钮一个单元，用它们做单元标题）
   // ⚠️ P5 试炼关停后「文字界面」按钮已移除（合并后没有可切换的视图了，
   //    切老版由侧边栏负责）——这里的 text 项一并删掉，避免留下无主单元。
+  // ⚠️ 「更多」与「退出」已合并为**一颗「菜单」**（v2.8）：
+  //    · 「更多」原本只是打开 DOM 侧边栏，而侧边栏那批功能（作弊 / 通关条件 /
+  //      教程 / 存档管理 / 图鉴 / 难度 / 切换老版）现在直接画在画布菜单里，
+  //      2D 画面不再需要「画布 → DOM 侧边栏 → 目标面板」这个中间层；
+  //    · 「退出」点下去弹的本来就是暂停菜单（里面叫「结束本局」），
+  //      名字与行为对不上 —— 玩家会以为「退出不见了」。
+  //    合并成「菜单」后，一颗按钮 = 一个中枢，Esc 走同一个入口。
   var HUD_BTN_LABELS = {
-    shop: '商店', codex: '图鉴', settings: '设置', more: '更多', quit: '退出'
+    stats: '属性', shop: '商店', codex: '图鉴', settings: '设置', menu: '菜单'
   };
+  // 菜单里显示的难度中文名（与 主界面.html 难度下拉的文案逐字一致）
+  var DIFF_CN = { easy: '简单', normal: '普通', hard: '困难', hell: '地狱', custom: '自定义' };
   var GRAVITY = 1700;
   var CELL = 64;
+
+  // ===== 遗物条（v2.8.1）几何 =====
+  // 位置刻意夹在「狂怒条」与「属性面板」之间：
+  //   狂怒条 y ≈ 74（条高 8，下沿约 78）
+  //   → 遗物条中心 104（17px 图标占 95.5~112.5）
+  //   → 属性面板首行中心 124（top0 = 104 + RELIC_ROW_H）
+  // ⚠️ RELIC_ROW_H 必须 ≥ 20：它决定属性面板从哪一行开始。
+  //    第一版写成 24 时算出来是 128，而 statPanelMetrics 原本的首行是 106 ——
+  //    实测「遗物」标签与属性面板的「攻」叠在了一起。20 是「图标下沿 112.5
+  //    到首行中心 124」留出 11.5px 后的最小值，再小就压字了。
+  var RELIC_ROW_CY = 104;   // 行中心
+  var RELIC_ROW_H = 20;     // 行占位高度（属性面板按它下让）
 
   // 蓄力跳参数：按住跳跃键蓄力，松开才起跳，蓄得越久跳越高
   // 跳跃高度 = 初速度² / (2 × 重力)，以此推算能上的平台高度
@@ -252,36 +273,62 @@
    * ⚠️ P1 只铺通路：先放 3 条用于回归验证；24 件的完整内容见
    *    《待做/2.7规划.md》§3.4，P3 按同一张表补齐即可，不必再动引擎骨架。
    */
+  /* ------------------------------------------------------------
+     遗物效果表（A 项「遗物构筑化」）
+     ------------------------------------------------------------
+     改造前的 24 件**全部是无条件数值**（+80ms 窗口、+30 体力……）：
+     拿到任何一件都不需要改变打法，只是数字更好 —— 这正是
+     「更新只是在堆数量、玩起来没深度」的根源：**数量不产生新的决定**。
+
+     现在每一条都按同一个标准重写：
+       ① **有条件**：效果挂在某个玩家可以主动去创造的状态上（残血 / 连携 / 完美判定）
+       ② **有流派**：同流派之间互相放大（见下面的分组）
+       ③ **有代价**：至少不再是无痛增益（贪婪流拿受伤换收益）
+
+     四个流派（school，与宿主 RELIC_POOL 的 school 字段一一对应；
+     构筑面板与三选一卡片都按它显示，玩家能看出自己正在凑哪一套）：
+       blood   血怒 —— 主动掉血换输出：破釜沉舟 + 血之饥渴 + 荆棘之心 + 狂热之血
+       perfect 完美 —— 判定窗口与收益：完美直觉 + 铁壁 + 反击之刃 + 锐利核心
+       link    连携 —— 新资源本身：连携之心 + 不屈意志 + 回响精通（见文件里的 LINK）
+       greed   贪婪 —— 收益换风险：贪婪之心 + 商人眼光 + 命运轮盘
+     ------------------------------------------------------------ */
   var RELIC_FX = {
-    // --- 体力 / 闪避 ---
-    lightBoots:      { stamMax: 30, stamRegen: 0.30 },        // 轻盈之靴：体力上限 +30、停手回复 +30%
-    windShadow:      { dodgeInvuln: 120, dashDist: 0.15 },    // 疾风残影：无敌帧 +120ms、冲刺距离 +15%
-    perfectInstinct: { perfectWindow: 80, sharpDur: 2000 },   // 完美直觉：完美窗口 +80ms、锐利 +2s
-    airFeather:      { airDrag: 0.40 },                       // 滞空之羽：空中闪避保留的坠速更小
-    // --- 防御 ---
-    ironWall:        { guardPerfect: 80 },                    // 铁壁：完美格挡窗口 +80ms
-    counterBlade:    { counterMult: 1, guardShield: 3 },      // 反击之刃：盾反 ×2→×3 并回 3 护盾（只作用于完美格挡）
-    thornHeart:      { thornExtra: 3 },                       // 荆棘之心：被命中反弹更多
-    shieldResonance: { shieldGain: 2 },                       // 护盾共鸣：每次获得护盾额外 +2
-    immortalTotem:   { perk: 'totem' },                       // 不朽图腾：致命伤保留 1 血（每层一次）
-    // --- 输出 ---
-    furyBlood:       { furyGain: 0.25 },                      // 狂热之血：狂怒获取 +25%
-    desperateStrike: { dmgLowHp: 0.25 },                      // 破釜沉舟：生命 ≤50% 时伤害 +25%
-    chainMaster:     { chainWindow: 250, sweepMult: 0.50 },   // 连击大师：连招窗口 +250ms、横扫 +50%
-    executioner:     { executeBonus: 0.10 },                  // 处决者：斩杀线 +10%
-    huntMark:        { executeSet: 0.50 },                    // 猎杀标记：斩杀线提升至 50%
-    bloodThirst:     { vampireExtra: 1 },                     // 血之饥渴：吸血等级 +1
-    heavyStrike:     { diveMult: 0.40, buryChance: 0.12 },    // 重击：跳劈倍率 +0.4、埋人概率 +12%
-    sharpCore:       { sharpMultSet: 3.0 },                   // 锐利核心：锐利倍率 2.2 → 3.0
-    // --- 远程 ---
-    trackingCharm:   { homing: 0.50, shotSpeed: 0.10 },       // 追踪符：追踪 +50%、弹速 +10%
-    piercingArrow:   { pierce: 1 },                           // 穿透之矢：穿透 +1
-    // --- 经济 / 恢复 ---
-    merchantEye:     { shopDiscount: 0.20 },                  // 商人眼光：商店价格 −20%
-    greedyHeart:     { goldGain: 0.35, takenMult: 0.10 },     // 贪婪之心：金币 +35%、受伤 +10%
-    soulDrinker:     { healKill: 2 },                         // 汲魂者：击杀回复 2 生命
-    fateWheel:       { perk: 'fateWheel' },                   // 命运轮盘：每清一房随机收益
-    abyssMark:       { perk: 'fourChoices' }                  // 深渊印记：三选一变四选一
+    // ===== 血怒流：越残越猛（条件全是"当前生命比例"，玩家可以主动去够）=====
+    desperateStrike: { dmgPerMissingHp: 0.07 },                        // 破釜沉舟：每损失 10% 生命，伤害 +7%（取代原来的"半血以下 +25%"开关）
+    bloodThirst:     { vampireExtra: 1, vampLowHpMult: 1 },            // 血之饥渴：吸血 +1；生命 ≤50% 时翻倍
+    thornHeart:      { thornExtra: 3, thornLowHpMult: 1 },             // 荆棘之心：反伤 +3；生命 ≤50% 时翻倍
+    furyBlood:       { furyGain: 0.35, furyLowHp: 0.35 },              // 狂热之血：狂怒获取 +35%；生命 ≤50% 时再 +35%
+    immortalTotem:   { perk: 'totem' },                                // 不朽图腾：致命伤保留 1 血 —— 血怒流的保险丝（敢残血的前提）
+
+    // ===== 完美流：把判定窗口和判定收益一起堆起来 =====
+    perfectInstinct: { perfectWindow: 80, sharpDur: 2000 },            // 完美直觉：完美闪避窗口 +80ms、锐利 +2s
+    ironWall:        { guardPerfect: 80 },                             // 铁壁：完美格挡窗口 +80ms
+    counterBlade:    { counterMult: 1, guardShield: 3 },               // 反击之刃：盾反 ×2→×3 并回 3 护盾
+    sharpCore:       { sharpMultSet: 3.0 },                            // 锐利核心：锐利倍率 2.2 → 3.0
+    windShadow:      { dodgeInvuln: 120, dashDist: 0.15 },             // 疾风残影：无敌帧 +120ms、冲刺 +15%
+
+    // ===== 连携流：新资源（LINK）的三个旋钮 —— 上限 / 耐打 / 强度 =====
+    linkHeart:       { linkMax: 2 },                                   // 连携之心：上限 3 → 5
+    unbroken:        { perk: 'unbroken' },                             // 不屈意志：挨打时连携只 −1、不清零
+    echoMaster:      { linkDmg: 0.6 },                                 // 回响精通：连携倍率 1.6 → 2.2
+
+    // ===== 贪婪流：收益换风险 =====
+    greedyHeart:     { goldGain: 0.60, takenMult: 0.20 },              // 贪婪之心：金币 +60%；受伤 +20%（代价与收益一起翻倍）
+    merchantEye:     { shopDiscount: 0.25 },                           // 商人眼光：商店价格 −25%
+    fateWheel:       { perk: 'fateWheel' },                            // 命运轮盘：每清一房随机收益
+    soulDrinker:     { healKill: 2, healKillLowHp: 2 },                // 汲魂者：击杀回 2；生命 ≤50% 时回 4
+
+    // ===== 生存 / 机动 / 输出（保留原有手感，各挑一条做成"条件型"）=====
+    lightBoots:      { stamMax: 30, stamRegen: 0.30 },                 // 轻盈之靴：体力上限 +30、停手回复 +30%
+    airFeather:      { airDrag: 0.40, airDodgeFree: 1 },               // 滞空之羽：空中闪避坠速更小，且不耗体力
+    shieldResonance: { shieldGain: 2, perfectShield: 3 },              // 护盾共鸣：护盾 +2；完美格挡额外 +3
+    chainMaster:     { chainWindow: 250, sweepMult: 0.50 },            // 连击大师：连招窗口 +250ms、横扫 +50%
+    executioner:     { executeBonus: 0.10, executeLink: 1 },           // 处决者：斩杀线 +10%；斩杀成功回 1 连携
+    huntMark:        { executeSet: 0.50 },                             // 猎杀标记：斩杀线提升至 50%
+    heavyStrike:     { diveMult: 0.40, buryChance: 0.12, diveLinkMult: 0.6 }, // 重击：跳劈 +0.4、埋人 +12%；跳劈吃连携时倍率再 +0.6
+    trackingCharm:   { homing: 0.50, shotSpeed: 0.10 },                // 追踪符：追踪 +50%、弹速 +10%
+    piercingArrow:   { pierce: 1 },                                    // 穿透之矢：穿透 +1
+    abyssMark:       { perk: 'fourChoices' }                           // 深渊印记：三选一变四选一
   };
 
 
@@ -329,6 +376,12 @@
       mirror: Math.max(1, Math.round(MECH_BASE.furyGainHit.mirror * fg)),
       boss: Math.max(1, Math.round(MECH_BASE.furyGainHit.boss * fg))
     };
+
+    // 连携（LINK）：上限与倍率 —— A 项「遗物构筑化」的接口。
+    // 遗物可以买到"连携上限 +1"或"回响更强"，于是「完美判定流」从
+    // "靠手感的运气"变成一条能主动堆出来的构筑路线。
+    LINK.max = Math.max(1, Math.round(MECH_BASE.linkMax + num('linkMax', 0)));
+    LINK.dmgMult = MECH_BASE.linkDmgMult + num('linkDmg', 0);
 
     var pierceAdd = Math.round(num('pierce', 0));
     var shotScale = 1 + num('shotSpeed', 0);
@@ -454,7 +507,9 @@
    *     —— 举盾和走位不攒怒，所以它奖励的是"打得凶"，和体力（奖励会躲）形成一组对立
    *   · 满了按 R 进入**狂怒状态 6 秒**：攻速、伤害、移速全面拉满；代价是受到的伤害 +15%
    *     （狂暴而不设防）—— 保留原版"亲手按下爆发"的那个时刻，但把一次性伤害换成一段状态
-   *   · 满怒后 12 秒没按也不会浪费：自动进入狂怒（HUD 上有倒计时）
+   *   · **只手动触发**：满怒后不会自动爆发，一直存着等玩家按 R —— 什么时候用由玩家决定。
+   *     （曾经有一条"满怒 12 秒没按就自动爆发"的兜底，用户要求去掉：自动触发会在玩家
+   *       不想动手的时候把资源吞掉，攒怒的意义就没了。）
    */
   var FURY = {
     max: 100,
@@ -464,7 +519,6 @@
     gainKill: 5,         // 击杀
     gainHurt: 4,         // 挨打（逆风也能翻）
     duration: 6000,      // 狂怒状态持续(ms)
-    autoDelay: 12000,    // 满怒后多久自动进入狂怒
     atkSpeed: 1.35,      // 攻击间隔缩短倍率
     dmgMult: 1.5,        // 伤害倍率
     moveMult: 1.25,      // 移动速度倍率
@@ -531,7 +585,11 @@
   //  设置（存档集成）
   // ============================================================
   function defaultSettings() {
-    return { enabled: true, quality: 'auto', particles: true, screenShake2D: true, floatText: true };
+    // hudDensity 必须在这里有默认值：loadSettings 只从 defaultSettings 的**键**
+    // 上回填（见下面的 for-in），缺键的项无论存了多少次都读不回来 ——
+    // 第一版漏了它，结果设置里切「极简」存进了 localStorage，
+    // 引擎侧却永远解析成 undefined，画面上什么都不会变。
+    return { enabled: true, quality: 'auto', particles: true, screenShake2D: true, floatText: true, hudDensity: 'auto' };
   }
 
   function loadSettings() {
@@ -683,9 +741,9 @@
   }
 
   // ============================================================
-  //  宿主桥接（试炼文字逻辑）：商店数据 / 视图切换 / 退出试炼
+  //  宿主桥接（持有内核状态的宿主，如 经典2D.js）：商店数据 / 决策内容 / 退出本局
   //  ------------------------------------------------------------
-  //  2D 层只负责画面与交互，点位、解锁、退出流程仍由试炼模块处理，
+  //  2D 层只负责画面与交互，楼层规划、解锁、退出流程仍由宿主处理，
   //  桥接缺失时（例如单独打开 2D 层）自动降级为画面内提示。
   // ============================================================
   function hasBridge(name) {
@@ -795,6 +853,244 @@
     } catch (e) { /* 尺寸校正失败不影响战斗 */ }
   }
 
+  // ============================================================
+  //  高密度屏（DPR）适配
+  // ============================================================
+  /* ============================================================
+     现象：手机上整个战斗画面发糊、文字边缘不锐利，PC 上正常。
+
+     根因：Phaser 3 的 ScaleManager 是按 **CSS 像素** 写 canvas.width/height 的
+     （整个 vendor/phaser.min.js 里 devicePixelRatio 只被存进 Device 模块，没人读它；
+      Phaser 3 也**没有** Phaser 2 那个 resolution 配置项）。
+     于是 DPR=2/3 的手机上，画布只有 CSS 像素那么多物理像素，浏览器必须把整块位图
+     放大 2~3 倍去铺满屏幕 —— 每个画出来的像素被摊成 2~3 个物理像素，这就是"糊"。
+
+     ⚠️ 不能走"把坐标全改成物理像素"那条路（试过，真机上一片错位）：
+        项目里几十处布局常量（24 / 12 / RELIC_ROW_CY / 各字号…）都是**逻辑语义**的，
+        坐标系一变，它们全都要乘密度；漏一处就是错位，而且相机跟随 / 死区 / 边界 /
+        命中矩形还要各自再乘一遍，永远对不齐。
+
+     ✅ 本文件的接法：**只动渲染，不动坐标**。
+        · canvas.width/height = 逻辑尺寸 × 密度        → 真像素，浏览器不再放大
+        · renderer 尺寸 / GL 视口 / 裁剪矩形 = 画布物理尺寸
+        · 投影矩阵仍按**逻辑尺寸**建立                → 世界 (0..W, 0..H) 正好铺满画布
+        于是所有游戏代码（世界坐标 / HUD 坐标 / 相机 / 指针 / 命中矩形）继续用
+        逻辑像素，一行都不用改；文字与矢量图形则真按物理像素栅格化，边缘变锐利。
+
+     为什么这三者可以不一致（这是关键，也是上一条路走歪的地方）：
+     Phaser 的投影矩阵是**全局一份**（WebGLRenderer.setProjectionMatrix），
+     相机只贡献「变换矩阵 + 裁剪矩形」两项 —— 所以视口可以比投影的世界范围大，
+     那正好等价于"按密度放大"。
+
+     DPR=1 时三个尺寸完全相等，本模块等于什么都没做（PC 上零行为差异）。
+     已在 测试/dpi解耦验证台.html 用 readPixels 逐像素验证过（DPR=1/2/3 与非线性档）。
+     ============================================================ */
+
+  var MAX_CANVAS_PIXELS = 16777216;   // ① 4096×4096：iOS 单张画布超过会白屏
+  var BUDGET_PIXELS = 4000000;        // ② 每帧填充预算（约 2560×1560）
+  // ⚠️ BUDGET_PIXELS 是"清晰 ↔ 帧率"的**唯一旋钮**：调大更清楚但更吃填充率。
+  //    小屏高分（例如 800×360 逻辑 @3 倍 = 259 万像素）根本不触发限流，
+  //    大屏高密度（1920×990 @2 倍 = 760 万）才会退到 1.5 / 1.25。
+
+  /** 设备**标称**密度（1~3）。只用于诊断与限流输入，不要拿它去乘坐标 */
+  function realDeviceDpr() {
+    var d = 1;
+    try {
+      if (typeof global.devicePixelRatio === 'number' && global.devicePixelRatio > 0) {
+        d = global.devicePixelRatio;
+      }
+    } catch (e) { /* 忽略 */ }
+    return Math.max(1, Math.min(3, d));
+  }
+
+  /**
+   * 这一档该用多大密度（物理像素 = 逻辑像素 × 本函数值）
+   * 超预算就按 0.25 一档往下降：宁可稍糊也不卡 —— 低配机上"清晰"不能拿帧率换。
+   */
+  function densityFor(lw, lh, isGL) {
+    // Canvas 渲染器是纯 CPU 光栅化，没有投影可放大（放大只会让画面变小），
+    // 因此这类设备保持 1 = 与旧版本完全一致。
+    if (!isGL) return 1;
+    if (!(lw > 0 && lh > 0)) return 1;
+    var d = realDeviceDpr();
+    var cap = Math.min(MAX_CANVAS_PIXELS, BUDGET_PIXELS);
+    // 不超预算就**原样**用设备密度（2.625 这种非整数也照用）：
+    // 只有画布像素与设备像素严格 1:1，才不会再多一层重采样。
+    if (lw * d * lh * d <= cap) return d;
+    // 超预算才按 0.25 一档降（此时本来就不是 1:1 了，取整齐值便于诊断）
+    while (d > 1 && lw * d * lh * d > cap) d -= 0.25;
+    if (d < 1) d = 1;
+    return Math.round(d * 4) / 4;     // 量化到 0.25，避免出现 1.13 这种怪值
+  }
+
+  /** 建引擎之前先把这一档密度算出来（场景 create 里生成纹理要用它） */
+  function preseedDensity(container, isGL) {
+    try {
+      var lw = container ? Math.round(container.clientWidth || 0) : 0;
+      var lh = container ? Math.round(container.clientHeight || 0) : 0;
+      state._dprCanvas = densityFor(lw, lh, isGL);
+    } catch (e) {
+      state._dprCanvas = 1;
+    }
+    return state._dprCanvas;
+  }
+
+  /** 全项目唯一的密度口径（未算出之前一律 1 = 老行为）。纹理与文字分辨率只认它 */
+  function deviceDpr() {
+    var d = state._dprCanvas;
+    return (d > 0) ? d : 1;
+  }
+
+  /** 实际渲染密度 = 画布像素 / 逻辑尺寸（诊断用，永远反映真相） */
+  function renderDpr() {
+    var g = state.game, sc = g && g.scale, c = g && g.canvas;
+    if (!sc || !c || !(sc.width > 0)) return deviceDpr();
+    return Math.max(1, c.width / sc.width);
+  }
+
+  /**
+   * 装接法：把上面三件事挂到 Phaser 上
+   * ------------------------------------------------------------
+   * 只改三个"输出口"，不改任何一处游戏逻辑：
+   *   ① ScaleManager.updateScale   —— 唯一决定 canvas.width/height 的地方
+   *   ② renderer.resize            —— 决定 GL 视口 / 裁剪矩形 / 清屏范围
+   *   ③ renderer.preRenderCamera   —— 决定每台相机绘制时被裁到哪里
+   */
+  function installDensity(game) {
+    if (!game || !game.scale || state._densityInstalled) return false;
+    state._densityInstalled = true;
+    var sc = game.scale, r = game.renderer;
+
+    // ① 画布后备像素 = 逻辑尺寸 × 密度。
+    //    gameSize / baseSize / displaySize 仍写**逻辑**尺寸（与原生 RESIZE 完全一致）：
+    //    相机尺寸、指针换算、displayScale 全靠它们，一动就全盘错位。
+    sc.updateScale = function () {
+      var lw = Math.max(1, Math.round(this.parentSize.width));
+      var lh = Math.max(1, Math.round(this.parentSize.height));
+      var gl = !!(game.renderer && game.renderer.gl);
+      var d = densityFor(lw, lh, gl);
+      if (d !== state._dprCanvas) {
+        state._dprCanvas = d;
+        state._dprDirty = true;      // 纹理/字号是"按密度生成一次"的，需要重建
+      }
+      this.displaySize.setSize(lw, lh);
+      this.gameSize.setSize(lw, lh);
+      this.baseSize.setSize(lw, lh);
+      this.canvas.width = Math.round(lw * d);
+      this.canvas.height = Math.round(lh * d);
+      // 渲染器必须与画布同步：Phaser 只在 baseSize 变化时才调 renderer.resize，
+      // 而"画布像素变大、逻辑尺寸不变"（正是本改动的形态）不会触发它 ——
+      // 不同步的话 GL 视口会停在上一个尺寸，画面只画进左下角一块。
+      var gm = state.game;
+      if (gm && gm.renderer && typeof gm.renderer.resize === 'function' &&
+          (gm.renderer.width !== this.canvas.width || gm.renderer.height !== this.canvas.height)) {
+        try { gm.renderer.resize(lw, lh); } catch (e) { /* 忽略 */ }
+      }
+    };
+
+    if (r && typeof r.setProjectionMatrix === 'function') {
+      // ② 渲染器尺寸 = 画布物理像素（视口 / 裁剪 / 清屏 / 遮罩全部自洽），
+      //    投影矩阵 = 逻辑尺寸（坐标照旧按逻辑铺满整张画布）。
+      var origResize = r.resize.bind(r);
+      r.resize = function (w, h) {
+        var pw = Math.round(this.canvas.width || 0);
+        var ph = Math.round(this.canvas.height || 0);
+        origResize(pw > 0 ? pw : w, ph > 0 ? ph : h);
+        this.setProjectionMatrix(w, h);
+      };
+
+      // ③ 相机裁剪矩形 = 整张画布物理像素。
+      //    ⚠️ 相机自己的 width/height 必须保持**逻辑**口径（跟随 / 死区 / 边界 /
+      //    worldView 全按它算），所以这里只是"临时换成物理裁剪、画完换回来"。
+      //    不这么做的话，裁剪框只有逻辑尺寸那么大 —— 画面只画出左下角一块。
+      var origPRC = r.preRenderCamera.bind(r);
+      r.preRenderCamera = function (cam) {
+        var sw = cam.width, sh = cam.height, sx = cam.x, sy = cam.y;
+        cam.x = 0; cam.y = 0;
+        cam.width = Math.round(this.canvas.width) || sw;
+        cam.height = Math.round(this.canvas.height) || sh;
+        origPRC(cam);
+        cam.width = sw; cam.height = sh; cam.x = sx; cam.y = sy;
+      };
+    }
+    return true;
+  }
+
+  /**
+   * 文字按密度重新栅格化
+   * ------------------------------------------------------------
+   * Phaser 的 Text 是**预渲染纹理**：字号 14px 就栅格化一张 14px 高的图，
+   * 投影放大 3 倍 = 把那张小图放大 3 倍 → 糊。
+   * setResolution(d) 只改纹理的像素密度、**不改显示尺寸**，所以布局一行都不用动。
+   */
+  function applyTextDensity(list, d) {
+    if (!list) return 0;
+    d = d || deviceDpr();
+    var arr = list.list ? list.list : list;
+    var n = 0;
+    for (var i = 0; i < arr.length; i++) {
+      var o = arr[i];
+      if (!o) continue;
+      if (o.type === 'Text') {
+        // 自定义布局把文字缩放过时，sharpenScaledText 会记一个更高的 _layoutRes，
+        // 取两者较大值，避免两条路径互相把对方的分辨率改小。
+        var want = Math.max(d, o._layoutRes || 0);
+        if (o._textRes !== want && typeof o.setResolution === 'function') {
+          o._textRes = want;
+          try { o.setResolution(want); n++; } catch (e) { /* 单条失败不影响其它 */ }
+        }
+      } else if (o.list) {
+        n += applyTextDensity(o.list, d);
+      }
+    }
+    return n;
+  }
+
+  /**
+   * 只读设备诊断（真机排查用）
+   * ------------------------------------------------------------
+   * 手机上打不开控制台：在地址栏里敲 `javascript:战斗2D.设备诊断()`
+   * 或由宿主显示出来。三个比值各自对应一类故障：
+   *   · 渲染密度 ≈ 设备DPR            → 正常
+   *   · 渲染密度 < 设备DPR 且 > 1     → 被预算限流（性能保护，不是故障）
+   *   · 渲染密度 == 1                 → 未生效（Canvas 渲染器 或 预算压到 1）
+   *   · 画布CSS比 != 1                → CSS 把画布拉伸过，1:1 被破坏
+   */
+  function densityReport() {
+    var out = {
+      设备DPR: realDeviceDpr(),
+      渲染密度: Math.round(renderDpr() * 100) / 100,
+      预算像素: BUDGET_PIXELS
+    };
+    var g = state.game;
+    if (!g || !g.canvas || !g.scale) { out.说明 = '引擎还没启动'; return out; }
+    var c = g.canvas, sc = g.scale, r = g.renderer;
+    out.逻辑尺寸 = Math.round(sc.width) + '×' + Math.round(sc.height);
+    out.画布像素 = c.width + '×' + c.height;
+    out.画布CSS = c.clientWidth + '×' + c.clientHeight;
+    out.画布CSS比 = c.clientWidth ? Math.round(c.width / c.clientWidth * 100) / 100 : null;
+    if (r) {
+      out.渲染器 = r.width + '×' + r.height;
+      out.投影 = (r.projectionWidth || 0) + '×' + (r.projectionHeight || 0);
+      try {
+        if (r.gl) {
+          out.GL视口 = r.gl.getParameter(r.gl.VIEWPORT).join(',');
+          out.GL缓冲 = r.gl.drawingBufferWidth + '×' + r.gl.drawingBufferHeight;
+        }
+      } catch (e) { /* 忽略 */ }
+    }
+    if (state.scene && state.scene.cameras && state.scene.cameras.main) {
+      var cam = state.scene.cameras.main;
+      out.主相机 = Math.round(cam.width) + '×' + Math.round(cam.height) +
+        ' zoom=' + cam.zoom + ' scroll=' + Math.round(cam.scrollX) + ',' + Math.round(cam.scrollY);
+    }
+    var d = deviceDpr();
+    if (d >= realDeviceDpr() - 0.01) out.结论 = '正常：整屏按设备密度渲染';
+    else if (d > 1) out.结论 = '已限流：' + d + ' 倍（性能保护，不是故障）';
+    else out.结论 = '未生效：密度为 1（Canvas 渲染器 或 预算被压到 1）';
+    return out;
+  }
+
   /** 生成全部代码纹理 */  function buildTextures(scene) {
     var g = scene.make.graphics({ x: 0, y: 0 }, false);
 
@@ -865,7 +1161,20 @@
     guard:    { name: '精英守卫',   tier: 'elite',  behavior: 'charger', hp: 72,  atk: 11, speed: 94,  w: 34, h: 50, scale: 1.2,  tex: 'enemy', color: 0xd4a02a, attackRange: 78,  windup: 450, recover: 540, detect: 580, tint: 0xfff0c0 },
     necro:    { name: '死灵法师',   tier: 'elite',  behavior: 'shooter', hp: 56,  atk: 9,  speed: 66,  w: 32, h: 48, scale: 1.15, tex: 'enemy', color: 0x5a3a8a, attackRange: 340, windup: 540, recover: 700, detect: 560, keepDist: 220 },
     lord:     { name: '层主',       tier: 'boss',   behavior: 'boss',    hp: 160, atk: 14, speed: 84,  w: 42, h: 60, scale: 1.5,  tex: 'boss',  color: 0xb0182a, attackRange: 92,  windup: 520, recover: 620, detect: 720 },
-    shadowking:{ name: '影之皇',    tier: 'boss',   behavior: 'boss',    hp: 240, atk: 18, speed: 100, w: 44, h: 64, scale: 1.7,  tex: 'boss',  color: 0x3a0a2a, attackRange: 100, windup: 460, recover: 520, detect: 820, tint: 0xe0c0ff }
+    shadowking:{ name: '影之皇',    tier: 'boss',   behavior: 'boss',    hp: 240, atk: 18, speed: 100, w: 44, h: 64, scale: 1.7,  tex: 'boss',  color: 0x3a0a2a, attackRange: 100, windup: 460, recover: 520, detect: 820, tint: 0xe0c0ff },
+
+    /* ---------------- 机制型敌人（B 项）----------------
+       为什么加它们：原来 10 种敌人的区别只有"血量 / 速度 / 行为"，
+       而行为又只有追击 / 冲锋 / 飞行 / 远程四种 —— **打法完全一样**：
+       靠近、按 J、躲开。加数量不会改变这件事。
+       这三只各自封掉一条玩家最省事的路径，逼你动用工具箱里的某一件：
+         bulwark  铁壁兵  → 正面免疫：不许站桩平砍，必须跳劈（从上方）或绕后
+         weaver   织网者  → 织网减速：不许硬吃远程，必须用闪避切断
+         sacrificer 献祭者 → 给同伴套盾：不许按"最近的先打"，必须换目标
+       三只都刻意配了"能看出来的解法"，而不是纯数值压制。 */
+    bulwark:  { name: '铁壁兵',   tier: 'normal', behavior: 'bulwark', hp: 40,  atk: 6,  speed: 68,  w: 34, h: 48, scale: 1.1,  tex: 'enemy', color: 0x4a6a8a, attackRange: 68,  windup: 480, recover: 560, detect: 520, shieldFront: true },
+    weaver:   { name: '织网者',   tier: 'normal', behavior: 'shooter', hp: 30,  atk: 4,  speed: 74,  w: 32, h: 44, scale: 1.0,  tex: 'enemy', color: 0x3a5a4a, attackRange: 300, windup: 620, recover: 820, detect: 540, keepDist: 240, web: true },
+    sacrificer:{ name: '献祭者',  tier: 'elite',  behavior: 'support', hp: 48,  atk: 6,  speed: 72,  w: 30, h: 48, scale: 1.1,  tex: 'enemy', color: 0x7a1a2a, attackRange: 320, windup: 560, recover: 700, detect: 620, keepDist: 260, auraShield: true }
   };
 
   function poolForFloor(floor) {
@@ -873,13 +1182,18 @@
     if (floor >= 2) pool.push('zombie');
     if (floor >= 3) pool.push('magma');
     if (floor >= 4) pool.push('shade');
+    // 机制型敌人从第 5 层开始逐个登场：给玩家足够时间先学会基本操作，
+    // 再让"某一种打法被针对"成为压力来源 —— 它们的作用是制造变化，不是制造难度墙
+    if (floor >= 5) pool.push('bulwark');
     if (floor >= 6) pool.push('necro');
+    if (floor >= 7) pool.push('weaver');
+    if (floor >= 9) pool.push('sacrificer');
     return pool;
   }
 
   // 敌人属性显示用的中文标签
   var TIER_NAMES = { normal: '普通', elite: '精英', mirror: '镜像', boss: '首领' };
-  var BEHAVIOR_NAMES = { chaser: '追击', charger: '冲锋', flyer: '飞行', shooter: '远程', boss: '首领' };
+  var BEHAVIOR_NAMES = { chaser: '追击', charger: '冲锋', flyer: '飞行', shooter: '远程', boss: '首领', bulwark: '持盾', support: '辅助' };
 
   // ============================================================
   //  房间系统（地图生成 + 房间类型）
@@ -896,6 +1210,51 @@
      读取点一行都不用动，也不会因为反复下发而累加漂移。
      （新增遗物只要往 RELIC_FX 加一行、在这里补一条映射即可。）
      ============================================================ */
+  /* ============================================================
+     连携（Link）—— 把「打得好」变成一种能攒、能选、有风险的资源
+     ------------------------------------------------------------
+     为什么要它（用户反馈：「玩法没什么深度」）：
+       引擎里本来就有很硬的技巧门槛（完美闪避 150ms / 完美格挡 200ms / 盾反 / 跳劈），
+       但它们的收益是**互相孤立的瞬时 buff** —— 完美闪避必给锐利、完美格挡必给盾反，
+       玩家没有任何可做的决定，"打得好"只等于"接下来几秒数字更大"。
+     连携把技巧变成资源，于是产生了三个真实抉择：
+       · 攒：每次完美判定 +1（上限 3）
+       · 选：点数被**下一次主动攻击**吃掉（普攻 / 连招 / 跳劈都吃），
+             "留着这点打盾反"和"现在先砍一刀"变成需要权衡的事
+       · 险：一旦被打中，全部清零 —— 想攒就得敢在刀尖上站着
+     与遗物的关系（A 项「遗物构筑化」）：上限 / 倍率 / 受击是否清零都由遗物改，
+     所以「连携上限 + 不屈意志 + 回响精通」本身就是一条能主动堆的构筑路线。
+     ============================================================ */
+  var LINK = {
+    max: 3,          // 上限（遗物 linkMax 可抬）
+    dmgMult: 1.6,    // 连携招式的伤害倍率（遗物 linkDmg 可抬）
+    splash: 1.5,     // 跳劈带连携时，落地冲击波半径的倍率
+    knock: 1.6       // 盾反带连携时，击退力度的倍率
+  };
+
+  /* ============================================================
+     织网者的网（B 项机制型敌人）
+     ------------------------------------------------------------
+     它不是"另一种远程怪"，而是**逼你用闪避**的那一只：
+     被网缠住 → 移动掉到 45%，而**闪避可以直接把网撕开**（见 tryDodge）。
+     于是每一发网都变成一道实时的二选一：先闪掉它，还是先吃一下换个输出窗口。
+     解法写在操作上（而不是数值上），这是"机制型"和"堆数值"的分界线。
+     ============================================================ */
+  var WEB = {
+    duration: 5200,     // 缠身时长
+    moveScale: 0.45,    // 被缠住时的移动速度倍率
+    cd: 2600,           // 同一只织网者的两次吐网间隔
+    speed: 260,         // 网弹飞行速度
+    radius: 560         // 吐网的最远距离
+  };
+
+  /* 铁壁兵的转身延迟（B 项）
+     ------------------------------------------------------------
+     这个数字是"绕后"这条解法**唯一**的存在依据：
+     它对玩家的朝向每帧都会更新（那就永远正面），所以必须给它一个转身延迟 ——
+     玩家在延迟窗口里绕到背后，才打得到它。调大 = 更好绕，调小 = 只能跳劈。 */
+  var SHIELD_TURN = 700;
+
   var MECH_BASE = {
     staminaMax: STAMINA.max,
     staminaRegen: STAMINA.regen,
@@ -917,6 +1276,8 @@
     furyGainPerfect: FURY.gainPerfect,
     furyGainHurt: FURY.gainHurt,
     furyGainHit: { normal: FURY.gainHit.normal, elite: FURY.gainHit.elite, mirror: FURY.gainHit.mirror, boss: FURY.gainHit.boss },
+    linkMax: LINK.max,
+    linkDmgMult: LINK.dmgMult,
     ranged: {
       ranger: { pierce: RANGED_ATTACK.ranger.pierce, speed: RANGED_ATTACK.ranger.speed, homing: 0 },
       mage: { pierce: RANGED_ATTACK.mage.pierce, speed: RANGED_ATTACK.mage.speed, homing: RANGED_ATTACK.mage.homing || 0 },
@@ -1125,7 +1486,12 @@
     // 面板内嵌卡片
     box: 0x121828, boxAlpha: 0.74, boxLine: 0xffffff, boxLineAlpha: 0.07, boxR: 10,
     // 血量条（轨道 / 渐变）
-    track: 0xffffff, trackAlpha: 0.06, trackBase: 0x05070f, trackBaseAlpha: 0.5,
+    // ⚠️ 轨道的两个 alpha 是"空槽看不看得见"的唯一决定因素：
+    //    条没满的时候（狂怒尤其常见），玩家看到的只是左边那一段渐变，
+    //    空槽太暗就等于"条只有那么长" —— 旁边的数值看上去就飘在空处，
+    //    被当成"文字没贴着条"。0.06 / 0.50 实测在 #07070f 上几乎不可辨（≈ +14 灰阶），
+    //    现在提到能读出一条完整槽位、又不抢填充色的程度。
+    track: 0xffffff, trackAlpha: 0.12, trackBase: 0x05070f, trackBaseAlpha: 0.62,
     hpFrom: '#e86878', hpTo: '#f0d06a',
     heroFrom: '#5fd0a8', heroTo: '#73f0b4',
     shieldFrom: '#5fd0e0', shieldTo: '#9a8ef0',
@@ -1158,23 +1524,27 @@
 
   /**
    * 血条填充纹理（语义色横向渐变 + 圆角端点 + 顶部 1px 高光）
-   * 纹理宽度向上取 8 的倍数并按显示宽度 1:1 使用，因此圆角不会因横向缩放而失真。
+   * 纹理宽度向上取 8 的倍数，并按**显示宽度 1:1** 使用（显示尺寸是逻辑的、
+   * 纹理是"逻辑 × 密度"像素，所以 scale 恒为 1/密度，圆角不会被横向拉伸）。
+   * 名字里带密度：密度变了自然换一张，不会拿旧密度的纹理凑合。
    */
   function barTexture(scene, key, h, w, from, to) {
-    var tw = Math.max(8, Math.ceil(w / 8) * 8);
-    var name = 'rt_bar_' + key + '_' + h + '_' + tw;
+    var d = deviceDpr();
+    var tw = Math.max(8, Math.ceil(w / 8) * 8);      // 逻辑宽度
+    var pw = Math.round(tw * d), ph = Math.round(h * d);   // 纹理像素
+    var name = 'rt_bar_' + key + '_' + h + '_' + tw + '_' + d;
     if (scene.textures.exists(name)) return name;
-    var tex = scene.textures.createCanvas(name, tw, h);
+    var tex = scene.textures.createCanvas(name, pw, ph);
     var ctx = tex.getContext();
-    var grad = ctx.createLinearGradient(0, 0, tw, 0);
+    var grad = ctx.createLinearGradient(0, 0, pw, 0);
     grad.addColorStop(0, from);
     grad.addColorStop(1, to);
-    pathRoundRect(ctx, 0, 0, tw, h, h / 2);
+    pathRoundRect(ctx, 0, 0, pw, ph, ph / 2);
     ctx.fillStyle = grad;
     ctx.fill();
     ctx.globalCompositeOperation = 'source-atop';
     ctx.fillStyle = 'rgba(255,255,255,0.16)';
-    ctx.fillRect(0, 0, tw, Math.max(1, Math.round(h * 0.2)));
+    ctx.fillRect(0, 0, pw, Math.max(1, Math.round(ph * 0.2)));
     ctx.globalCompositeOperation = 'source-over';
     tex.refresh();
     return name;
@@ -1182,18 +1552,20 @@
 
   /** 血条轨道纹理：暗底 + 白 6% 槽 + 语义色 14% 细描边（对齐 .hp-bar） */
   function trackTexture(scene, h, w, tint) {
+    var d = deviceDpr();
     var tw = Math.max(8, Math.ceil(w / 8) * 8);
-    var name = 'rt_track_' + h + '_' + tw + '_' + tint.toString(16);
+    var pw = Math.round(tw * d), ph = Math.round(h * d);
+    var name = 'rt_track_' + h + '_' + tw + '_' + tint.toString(16) + '_' + d;
     if (scene.textures.exists(name)) return name;
     var g = scene.make.graphics({ x: 0, y: 0 }, false);
-    var r = Math.min(h / 2, tw / 2);
+    var r = Math.min(ph / 2, pw / 2);
     g.fillStyle(UI.trackBase, UI.trackBaseAlpha);
-    g.fillRoundedRect(0, 0, tw, h, r);
+    g.fillRoundedRect(0, 0, pw, ph, r);
     g.fillStyle(UI.track, UI.trackAlpha);
-    g.fillRoundedRect(0, 0, tw, h, r);
-    g.lineStyle(1, tint, 0.14);
-    g.strokeRoundedRect(0.5, 0.5, tw - 1, h - 1, Math.max(0.5, r - 0.5));
-    g.generateTexture(name, tw, h);
+    g.fillRoundedRect(0, 0, pw, ph, r);
+    g.lineStyle(d, tint, 0.14);
+    g.strokeRoundedRect(d / 2, d / 2, pw - d, ph - d, Math.max(0.5, r - d / 2));
+    g.generateTexture(name, pw, ph);
     g.destroy();
     return name;
   }
@@ -1233,13 +1605,32 @@
    */
   function sharpenScaledText(o, s) {
     if (!o || o.type !== 'Text' || typeof o.setResolution !== 'function') return;
-    var dpr = (typeof global.devicePixelRatio === 'number' && global.devicePixelRatio > 0)
-      ? global.devicePixelRatio : 1;
-    var res = Math.max(1, Math.min(4, s * dpr));
+    // 基准密度用**引擎的有效密度**（而不是裸的 devicePixelRatio）：
+    // 文字最终是被投影放大 deviceDpr 倍画到屏幕上的，两个数必须是同一个口径。
+    var res = Math.max(1, Math.min(4, s * deviceDpr()));
     res = Math.round(res * 4) / 4;
     if (o._layoutRes === res) return;
     o._layoutRes = res;
+    o._textRes = res;          // 与 applyTextDensity 共用同一个"已设过"标记
     try { o.setResolution(res); } catch (e) { /* 忽略 */ }
+  }
+
+  /**
+   * 这张图标纹理是不是"已经有一张了"
+   * ------------------------------------------------------------
+   * ⚠️ 刻意**不重建**：图标在场景创建时按当时的密度生成，之后密度就算变了也
+   *    继续用旧的那张（略软），而不是在战斗中删掉纹理重画 —— 删纹理会把正在
+   *    被引用的 frame 一起销毁，那一帧的按钮/遗物图标会变成未定义状态。
+   *    显示尺寸一律是逻辑值，所以几何永远不会错，最差只是"没吃到新密度"。
+   */
+  function iconTextureReady(scene, name, logical, d) {
+    if (!scene.textures.exists(name)) return false;
+    var t = scene.textures.get(name);
+    var img = (t && t.getSourceImage) ? t.getSourceImage() : null;
+    if (img && d > 0 && Math.round(img.width) !== Math.round(logical * d)) {
+      state._iconDensityStale = true;   // 诊断用：图标密度与当前密度不一致
+    }
+    return true;
   }
 
   /**
@@ -1259,6 +1650,18 @@
         g.strokeRoundedRect(3, 7, 10, 7, 2);
         g.beginPath(); g.arc(8, 7, 3, Math.PI, 0, false); g.strokePath();
       },
+      // 属性：仪表盘（上弧 + 两端刻度 + 指针 + 轴心）。
+      // 刻意不用"三根递增竖条"——那已经是「难度」图标，而这里要的是"数值/状态"。
+      // 两端那两根短刻度不是装饰：只有弧 + 指针时，缩小到 16px 会读成一张脸。
+      stats: function (g) {
+        g.lineStyle(2, 0xffffff, 1);
+        g.beginPath(); g.arc(8, 9.6, 5.6, Math.PI, Math.PI * 2, false); g.strokePath();
+        g.beginPath(); g.moveTo(2.8, 9.6); g.lineTo(4.4, 11.4); g.strokePath();
+        g.beginPath(); g.moveTo(13.2, 9.6); g.lineTo(11.6, 11.4); g.strokePath();
+        g.beginPath(); g.moveTo(8, 9.6); g.lineTo(10.4, 5.6); g.strokePath();
+        g.fillStyle(0xffffff, 1);
+        g.fillCircle(8, 9.6, 1.3);
+      },
       quit: function (g) {
         g.lineStyle(2, 0xffffff, 1);
         g.beginPath(); g.moveTo(11.5, 3); g.lineTo(4, 3); g.lineTo(4, 13); g.lineTo(11.5, 13); g.strokePath();
@@ -1275,8 +1678,7 @@
         g.beginPath(); g.moveTo(12, 4); g.lineTo(4, 12); g.strokePath();
       },
       // 图鉴：摊开的书（书脊 + 两页 + 文字行），与商店的"袋"、退出的"门"同笔宽
-      codex: function (g) {
-        g.lineStyle(2, 0xffffff, 1);
+      codex: function (g) {        g.lineStyle(2, 0xffffff, 1);
         g.beginPath(); g.moveTo(8, 4); g.lineTo(8, 14); g.strokePath();
         g.beginPath(); g.moveTo(8, 4); g.lineTo(2, 3); g.lineTo(2, 13); g.lineTo(8, 14); g.strokePath();
         g.beginPath(); g.moveTo(8, 4); g.lineTo(14, 3); g.lineTo(14, 13); g.lineTo(8, 14); g.strokePath();
@@ -1285,18 +1687,306 @@
         g.beginPath(); g.moveTo(4, 9.5); g.lineTo(6.5, 10); g.strokePath();
         g.beginPath(); g.moveTo(9.5, 7); g.lineTo(12, 6.5); g.strokePath();
         g.beginPath(); g.moveTo(9.5, 10); g.lineTo(12, 9.5); g.strokePath();
+      },
+      // ---------- 菜单（v2.8）：中枢那一套功能各要一颗图标 ----------
+      // 全部沿用上面同一套规格：16×16 画布、2px 笔宽、白色描边（运行时 tint）。
+      // 不用 emoji / Unicode 符号——它们在不同平台上的字形、基线、粗细都无法控制，
+      // 一混进来整排图标的视觉重量就散了。
+      menu: function (g) {
+        // 方框 + 两横线：与 text 图标的「裸三横线」区分开（后者没有边框）
+        g.lineStyle(2, 0xffffff, 1);
+        g.strokeRoundedRect(2, 2, 12, 12, 3);
+        g.beginPath(); g.moveTo(5, 6.4); g.lineTo(11, 6.4); g.strokePath();
+        g.beginPath(); g.moveTo(5, 9.8); g.lineTo(11, 9.8); g.strokePath();
+      },
+      settings: function (g) {
+        // 齿轮：内圈 + 八根短齿（齿长压到 2.2，留出描边余量不越 16×16）
+        g.lineStyle(2, 0xffffff, 1);
+        g.beginPath(); g.arc(8, 8, 3.6, 0, Math.PI * 2); g.strokePath();
+        for (var i = 0; i < 8; i++) {
+          var a = i * Math.PI / 4;
+          g.beginPath();
+          g.moveTo(8 + Math.cos(a) * 4.6, 8 + Math.sin(a) * 4.6);
+          g.lineTo(8 + Math.cos(a) * 6.8, 8 + Math.sin(a) * 6.8);
+          g.strokePath();
+        }
+      },
+      cheat: function (g) {
+        // 骰子「3」点面：作弊的语义一眼可读，且与其它图标的直线风格互补
+        g.lineStyle(2, 0xffffff, 1);
+        g.strokeRoundedRect(3, 3, 10, 10, 2);
+        g.fillStyle(0xffffff, 1);
+        g.fillCircle(5.8, 5.8, 1.15);
+        g.fillCircle(8, 8, 1.15);
+        g.fillCircle(10.2, 10.2, 1.15);
+      },
+      condition: function (g) {
+        // 通关条件：旗杆 + 三角旗面
+        g.lineStyle(2, 0xffffff, 1);
+        g.beginPath(); g.moveTo(4, 2.5); g.lineTo(4, 13.5); g.strokePath();
+        g.beginPath(); g.moveTo(4, 3.5); g.lineTo(12.5, 5.5); g.lineTo(4, 7.5); g.strokePath();
+      },
+      tutorial: function (g) {
+        // 教程：问号（钩 + 竖 + 点）
+        g.lineStyle(2, 0xffffff, 1);
+        g.beginPath(); g.arc(8, 6, 3.2, Math.PI * 0.92, Math.PI * 2.32); g.strokePath();
+        g.beginPath(); g.moveTo(8, 9.2); g.lineTo(8, 10.8); g.strokePath();
+        g.fillStyle(0xffffff, 1);
+        g.fillCircle(8, 13.1, 1.15);
+      },
+      save: function (g) {
+        // 存档管理：软盘（切角外框 + 上方滑片 + 下方标签）
+        g.lineStyle(2, 0xffffff, 1);
+        g.beginPath();
+        g.moveTo(3, 3); g.lineTo(11, 3); g.lineTo(13, 5); g.lineTo(13, 13); g.lineTo(3, 13);
+        g.closePath(); g.strokePath();
+        g.beginPath(); g.moveTo(6, 3); g.lineTo(6, 6.5); g.lineTo(10, 6.5); g.lineTo(10, 3); g.strokePath();
+        g.beginPath(); g.moveTo(5, 13); g.lineTo(5, 9.5); g.lineTo(11, 9.5); g.lineTo(11, 13); g.strokePath();
+      },
+      legacy: function (g) {
+        // 切换老版：两条反向箭头（一来一回）
+        g.lineStyle(2, 0xffffff, 1);
+        g.beginPath(); g.moveTo(4.5, 5.5); g.lineTo(12, 5.5); g.strokePath();
+        g.beginPath(); g.moveTo(11.5, 10.5); g.lineTo(4, 10.5); g.strokePath();
+        g.fillStyle(0xffffff, 1);
+        g.fillTriangle(5, 3, 5, 8, 2, 5.5);
+        g.fillTriangle(11, 8, 11, 13, 14, 10.5);
+      },
+      difficulty: function (g) {
+        // 难度：三根递增竖条（低 → 高）
+        g.lineStyle(2, 0xffffff, 1);
+        g.beginPath(); g.moveTo(3.5, 13); g.lineTo(3.5, 9.5); g.strokePath();
+        g.beginPath(); g.moveTo(8, 13); g.lineTo(8, 6.5); g.strokePath();
+        g.beginPath(); g.moveTo(12.5, 13); g.lineTo(12.5, 3.5); g.strokePath();
+      },
+      power: function (g) {
+        // 结束本局：电源符号（顶部留缺口的圆环 + 竖线）
+        g.lineStyle(2, 0xffffff, 1);
+        g.beginPath(); g.arc(8, 8.8, 5, -Math.PI / 3, Math.PI * 4 / 3, false); g.strokePath();
+        g.beginPath(); g.moveTo(8, 2.4); g.lineTo(8, 8.4); g.strokePath();
       }
     };
+    // 图标纹理按密度生成（16 逻辑像素的图形 → 16×d 像素的纹理）。
+    // 显示端一律 setDisplaySize(逻辑尺寸)，所以布局完全不受影响，只是边缘变锐利。
+    var d = deviceDpr();
     var g = null;
     Object.keys(defs).forEach(function (k) {
       var name = 'rt_ico_' + k;
-      if (scene.textures.exists(name)) return;
+      if (iconTextureReady(scene, name, 16, d)) return;
       if (!g) g = scene.make.graphics({ x: 0, y: 0 }, false);
       g.clear();
+      g.setScale(d);                    // generateTexture 会把对象变换一起烘进纹理
       defs[k](g);
-      g.generateTexture(name, 16, 16);
+      g.generateTexture(name, 16 * d, 16 * d);
     });
     if (g) g.destroy();
+  }
+
+  // ============================================================
+  //  遗物图标（v2.8.1）
+  // ------------------------------------------------------------
+  //  为什么要有这一套：2.7 把主画面换成 2D 画布之后，遗物在画面上**只剩一个数字**
+  //  （菜单里「遗物 N 件」）。而 26 件遗物分四流派、同派互相放大，是这一版构筑的
+  //  核心 —— 玩家看不见自己拿了什么、在凑哪一套，构筑这件事就不成立了。
+  //
+  //  设计约束（三条，都是为了让图标条不变成一撮噪点）：
+  //   1) **符号只表达效果，颜色只表达流派**。符号一律用白色描边 + 运行时 tint，
+  //      与 rt_ico_* 那 16 个按钮图标同一支笔（16×16 画布 / 2px 主笔宽），
+  //      所以它们看上去是同一套东西，而不是贴上去的另一套素材。
+  //   2) 外圈 1px 色环 + 内圈 8% 同色薄涂：色相是"我正在凑哪一套"在画面上的
+  //      唯一载体，色环让它在外圈成一条连续的弧 —— 一排看过去先看到的是色带。
+  //   3) 通用（无流派）用中性灰：它不参与成套，就不该抢流派的视觉位。
+  //
+  //  符号全部用"能读出来的做法"而不是抽象图形（镰刀就是镰刀、砖墙就是砖墙）：
+  //  图标只有 16px，抽象图形在这个尺寸下必然退化成点。
+  // ============================================================
+
+  /** 遗物流派色（色相分离优先：玫红 / 金 / 绿 / 紫，通用为中性灰） */
+  var SCHOOL_COLOR = {
+    blood:   0xff5a7a,   // 血怒：残血换输出
+    perfect: 0xf0d06a,   // 完美：判定窗口与判定收益
+    link:    0x73f0b4,   // 连携：新资源（攒 → 选 → 险）
+    greed:   0xb07ae0,   // 贪婪：收益换风险
+    '':      0x8f97ad    // 通用
+  };
+  var SCHOOL_LABEL = { blood: '血怒', perfect: '完美', link: '连携', greed: '贪婪', '': '通用' };
+  /** 流派色转 CSS 色串（文字用 —— Phaser 的 Text 只吃字符串色） */
+  function schoolCss(school) {
+    return '#' + ('000000' + (SCHOOL_COLOR[school] || SCHOOL_COLOR['']).toString(16)).slice(-6);
+  }
+
+  /**
+   * 遗物符号绘制上下文
+   * ------------------------------------------------------------
+   * 符号一律画在**中心坐标系**里（0,0 = 圆心，半径约 6.9 给人眼留白）。
+   * 直接写 16×16 绝对坐标的话，每改一次环的粗细就要把所有符号重算一遍。
+   *   move/line：抬笔 / 画线（不含落笔，连续调用即折线）
+   *   ring/arc ：整圆 / 弧
+   *   dot      ：实心圆点
+   *   tri      ：实心三角
+   *   w        ：改笔画粗细（主笔 1.7，细节 1.15 —— 副笔太粗会在 16px 里糊成一团）
+   */
+  function relicPen(g) {
+    // 当前笔宽自己记一份：dot/tri 会把 lineStyle 换成填充色，填完必须还回来 ——
+    // 否则「先点一个点、再描一条线」的符号里，那条线会用填充残留的状态画出来
+    var lw = 1.7;
+    var api = {
+      w: function (n) { lw = (n == null ? 1.7 : n); g.lineStyle(lw, 0xffffff, 1); return api; },
+      move: function (x, y) { g.beginPath(); g.moveTo(8 + x, 8 + y); return api; },
+      line: function (x, y) { g.lineTo(8 + x, 8 + y); g.strokePath(); return api; },
+      // 折线一气呵成（只描一次边）：line 连打会在每个转折点留下加粗的接头
+      poly: function (pts, close) {
+        g.beginPath();
+        for (var i = 0; i < pts.length; i++) {
+          if (i === 0) g.moveTo(8 + pts[i][0], 8 + pts[i][1]);
+          else g.lineTo(8 + pts[i][0], 8 + pts[i][1]);
+        }
+        if (close) g.closePath();
+        g.strokePath();
+        return api;
+      },
+      ring: function (r, a0, a1) { g.beginPath(); g.arc(8, 8, r, a0, a1, false); g.strokePath(); return api; },
+      dot: function (x, y, r) {
+        g.fillStyle(0xffffff, 1);
+        g.fillCircle(8 + x, 8 + y, r == null ? 1.2 : r);
+        g.lineStyle(lw, 0xffffff, 1);   // 还笔：见 lw 的说明
+        return api;
+      },
+      tri: function (x1, y1, x2, y2, x3, y3) {
+        g.fillStyle(0xffffff, 1);
+        g.fillTriangle(8 + x1, 8 + y1, 8 + x2, 8 + y2, 8 + x3, 8 + y3);
+        g.lineStyle(lw, 0xffffff, 1);   // 还笔
+        return api;
+      }
+    };
+    return api;
+  }
+
+  /**
+   * 26 件遗物的符号 + 静态定义
+   * ------------------------------------------------------------
+   * ⚠️ label / quality / school / desc 与 经典2D.js 的 RELIC_POOL **逐字同源**。
+   *    遗物详情的文案与图鉴说的是同一件事（改数值不会让界面说谎）。
+   *    这里留一份只读副本的原因：宿主 setRelics() 只下发 id 列表，
+   *    画布内拿不到 label 与 desc —— 而详情卡片恰恰只显示这两样。
+   *    副本一旦与 RELIC_POOL 不同步，遗物条就会显示错名字，
+   *    所以下面这段的每个字段都必须照着 RELIC_POOL 抄，不要在这里另写文案。
+   *    （顺序无关，按 id 查表；新增遗物时两处一起加。）
+   */
+  var RELIC_VIS = {
+    // ===== 血怒流：主动掉血换输出 =====
+    desperateStrike: { label: '破釜沉舟', quality: 'rare', school: 'blood', desc: '每损失 10% 生命，伤害 +7%（残血最多 +56%）· 与血之饥渴、荆棘之心成套',
+      // 破盾：**盾牌轮廓本身保留完整**，只在中线切一道锯齿裂痕 ——
+      // 试过"真的把轮廓也撕开"，结果盾牌在 16px 下认不出来了。
+      // 可辨识优先于字面准确：先看得出是盾，再看出它裂了。
+      draw: function (p) { p.w(1.7).poly([[-5.2, -3.0], [-5.2, 1.2], [0, 5.6], [5.2, 1.2], [5.2, -3.0], [0, -6.0]], true); p.w(1.15).poly([[0, -6.0], [-1.8, -2.2], [1.8, 0.4], [-1.8, 3.0], [0, 5.6]], false); }},
+    bloodThirst: { label: '血之饥渴', quality: 'rare', school: 'blood', desc: '吸血等级 +1；生命 ≤50% 时吸血翻倍',
+      draw: function (p) { p.w(1.7).poly([[0, -6.2], [3.6, 0.2], [3.6, 1.8]], false); p.move(0, -6.2).line(-3.6, 0.2); p.poly([[-3.6, 0.2], [-3.6, 2.0]], false); p.ring(2.5, 0.16, Math.PI - 0.16); p.w(1.15).dot(0, 1.3, 1.35); }},
+    thornHeart: { label: '荆棘之心', quality: 'rare', school: 'blood', desc: '被命中反弹 +3；生命 ≤50% 时反伤翻倍',
+      draw: function (p) { p.w(1.7).ring(4.7, 0, Math.PI * 2); for (var i = 0; i < 8; i++) { var a = i * Math.PI / 4 + Math.PI / 8; p.move(Math.cos(a) * 4.7, Math.sin(a) * 4.7).line(Math.cos(a) * 6.9, Math.sin(a) * 6.9); } p.w(1.15).dot(0, 0, 1.9); }},
+    furyBlood: { label: '狂热之血', quality: 'common', school: 'blood', desc: '狂怒获取 +35%；生命 ≤50% 时再 +35%',
+      draw: function (p) { p.w(1.7).ring(5.0, Math.PI * 0.72, Math.PI * 2.28); p.poly([[0, -1.0], [3.2, -5.4], [3.6, 0.2]], true); p.w(1.15).move(-3.2, 4.6).line(3.2, 4.6); }},
+    immortalTotem: { label: '不朽图腾', quality: 'legendary', school: 'blood', desc: '致命伤保留 1 血（每层一次）· 敢残血作战的前提',
+      draw: function (p) { p.w(1.7).poly([[-3.2, -6.0], [3.2, -6.0], [4.8, 3.4], [-4.8, 3.4]], true); p.w(1.15).move(-2.0, -1.4).line(2.0, -1.4); p.move(-2.4, 0.8).line(2.4, 0.8); p.move(-5.8, 5.4).line(5.8, 5.4); }},
+    soulDrinker: { label: '汲魂者', quality: 'common', school: 'blood', desc: '击杀回复 2 生命；生命 ≤50% 时回复 4',
+      // 击杀回血：用「被吸上来的一缕魂」而不是第二颗血滴 ——
+      // 血滴已经给了「血之饥渴」，两件遗物同一个符号在条上就分不出来了
+      draw: function (p) { p.w(1.7).poly([[-4.4, 6.0], [-4.4, 2.0], [-1.6, -1.0], [1.6, -3.6], [4.4, -5.4]], false); p.w(1.15).poly([[-1.4, 6.0], [-1.4, 3.0], [0.6, 0.6], [3.0, -1.4]], false); p.move(3.2, -2.6).line(4.6, -4.0); }},
+
+    // ===== 完美流：判定窗口与判定收益 =====
+    perfectInstinct: { label: '完美直觉', quality: 'rare', school: 'perfect', desc: '完美闪避窗口 +80ms，锐利持续 +2s',
+      draw: function (p) { p.w(1.7).ring(5.4, 0, Math.PI * 2); p.w(1.15).ring(2.2, 0, Math.PI * 2); p.dot(0, 0, 1.25); p.w(1.7).move(-6.9, 0).line(-5.6, 0); p.move(6.9, 0).line(5.6, 0); p.move(0, -6.9).line(0, -5.6); p.move(0, 6.9).line(0, 5.6); }},
+    ironWall: { label: '铁壁', quality: 'common', school: 'perfect', desc: '完美格挡窗口 +80ms',
+      draw: function (p) { p.w(1.7).poly([[-5.4, -4.2], [5.4, -4.2], [5.4, 1.0], [0, 5.8], [-5.4, 1.0]], true); p.w(1.15).move(-5.4, -0.8).line(5.4, -0.8); p.move(-1.8, -3.4).line(-1.8, -1.6); p.move(1.8, -3.4).line(1.8, -1.6); p.move(-3.4, 1.6).line(-3.4, 3.0); }},
+    counterBlade: { label: '反击之刃', quality: 'rare', school: 'perfect', desc: '盾反伤害 ×2 → ×3，盾反回 3 护盾',
+      draw: function (p) { p.w(1.7).poly([[-5.0, 5.0], [2.2, -2.2], [4.6, -4.6]], false); p.w(1.15).move(-5.0, 5.0).line(-2.6, 4.0); p.move(-5.0, 5.0).line(-4.0, 2.6); p.w(1.7).poly([[1.0, -4.6], [4.6, -4.6], [4.6, -1.0]], false); }},
+    sharpCore: { label: '锐利核心', quality: 'legendary', school: 'perfect', desc: '完美闪避的锐利倍率 2.2 → 3.0',
+      draw: function (p) { p.w(1.7).poly([[0, -6.4], [1.9, -1.9], [6.4, 0], [1.9, 1.9], [0, 6.4], [-1.9, 1.9], [-6.4, 0], [-1.9, -1.9]], true); p.w(1.15).dot(0, 0, 1.2); }},
+    windShadow: { label: '疾风残影', quality: 'rare', school: 'perfect', desc: '闪避无敌帧 +120ms，冲刺距离 +15%',
+      draw: function (p) { p.w(1.7).ring(4.6, -Math.PI * 0.42, Math.PI * 0.42); p.poly([[-1.4, -2.8], [3.0, 0], [-1.4, 2.8]], true); p.w(1.15).ring(6.6, -Math.PI * 0.30, Math.PI * 0.30); }},
+
+    // ===== 连携流：新资源的三个旋钮 =====
+    linkHeart: { label: '连携之心', quality: 'rare', school: 'link', desc: '连携上限 3 → 5，能一口气攒更多',
+      draw: function (p) { p.w(1.7).poly([[0, -6.4], [3.0, -3.2], [0, 0], [-3.0, -3.2]], true); p.poly([[0, 0], [3.0, 3.2], [0, 6.4], [-3.0, 3.2]], true); p.w(1.15).dot(0, 0, 1.05); }},
+    unbroken: { label: '不屈意志', quality: 'legendary', school: 'link', desc: '挨打时连携只 −1 而非清零 · 与连携之心成套',
+      draw: function (p) { p.w(1.7).poly([[-2.2, -6.4], [1.8, -2.0], [-1.2, 1.2], [2.2, 6.4]], false); p.w(1.15).poly([[-4.8, -6.4], [-4.8, -2.4], [-3.0, -0.6]], false); p.poly([[4.8, 6.4], [4.8, 2.4], [3.0, 0.6]], false); }},
+    echoMaster: { label: '回响精通', quality: 'rare', school: 'link', desc: '连携招式倍率 1.6 → 2.2',
+      draw: function (p) { p.w(1.15).dot(-4.2, 0, 1.3); p.w(1.7).ring(2.8, -Math.PI * 0.58, Math.PI * 0.58); p.ring(5.4, -Math.PI * 0.52, Math.PI * 0.52); }},
+    executioner: { label: '处决者', quality: 'rare', school: 'link', desc: '斩杀线 +10%；斩杀成功回 1 连携',
+      draw: function (p) { p.w(1.7).poly([[-4.8, 6.2], [3.0, 0.6]], false); p.move(-2.6, 2.6).line(-0.4, 4.4); p.w(1.15).ring(4.0, -2.5, -0.6); p.w(1.7).move(5.2, -6.2).line(5.2, -3.4); }},
+    heavyStrike: { label: '重击', quality: 'common', school: 'link', desc: '跳劈 +0.4 倍、埋人 +12%；跳劈消耗连携时倍率再 +0.6',
+      draw: function (p) { p.w(1.7).poly([[1.0, -6.4], [5.0, -3.0], [1.0, 0.4]], true); p.move(1.0, -3.0).line(-2.4, 0.6); p.w(1.15).move(-4.4, 2.2).line(-1.0, 2.2); p.move(-5.4, 4.4).line(0.6, 4.4); p.w(1.7).dot(3.6, 3.6, 1.5); }},
+
+    // ===== 贪婪流：收益换风险 =====
+    greedyHeart: { label: '贪婪之心', quality: 'rare', school: 'greed', desc: '金币获取 +60%；受到的伤害 +20%',
+      draw: function (p) { p.w(1.7).ring(5.4, 0, Math.PI * 2); p.w(1.15).ring(3.1, 0, Math.PI * 2); p.w(1.7).dot(0, 0, 1.4); }},
+    merchantEye: { label: '商人眼光', quality: 'common', school: 'greed', desc: '商店价格 −25%',
+      draw: function (p) { p.w(1.7).poly([[-6.4, 0], [-3.4, -3.0], [3.4, -3.0], [6.4, 0], [3.4, 3.0], [-3.4, 3.0]], true); p.w(1.15).ring(1.9, 0, Math.PI * 2); p.dot(0, 0, 0.95); }},
+    fateWheel: { label: '命运轮盘', quality: 'legendary', school: 'greed', desc: '每清一个房间随机 +2~8 金币 或 −1 生命',
+      draw: function (p) { p.w(1.7).ring(5.6, 0, Math.PI * 2); for (var i = 0; i < 6; i++) { var a = i * Math.PI / 3; p.move(Math.cos(a) * 2.2, Math.sin(a) * 2.2).line(Math.cos(a) * 5.6, Math.sin(a) * 5.6); } p.w(1.15).ring(2.2, 0, Math.PI * 2); }},
+
+    // ===== 通用：不参与成套，用中性灰 =====
+    lightBoots: { label: '轻盈之靴', quality: 'common', school: '', desc: '体力上限 +30，停手回复 +30%',
+      draw: function (p) { p.w(1.7).poly([[-5.6, -2.2], [0.0, -5.0], [5.6, -2.2], [0.0, 0.6]], true); p.w(1.15).poly([[-4.8, 0.6], [0.0, 3.4], [4.8, 0.6]], false); p.poly([[-3.6, 3.0], [0.0, 5.4], [3.6, 3.0]], false); }},
+    airFeather: { label: '滞空之羽', quality: 'rare', school: '', desc: '空中闪避保留的坠速更小，且不消耗体力',
+      draw: function (p) { p.w(1.7).poly([[3.0, 5.4], [3.6, -1.4], [0.0, -5.6], [-3.2, -1.6], [-2.6, 5.4]], true); p.w(1.15).dot(0.2, -2.8, 1.05); }},
+    shieldResonance: { label: '护盾共鸣', quality: 'common', school: '', desc: '任何来源获得的护盾 +2；完美格挡额外 +3',
+      draw: function (p) { p.w(1.7).poly([[0, -6.2], [4.2, -3.2], [4.2, 1.2], [0, 4.8], [-4.2, 1.2], [-4.2, -3.2]], true); p.w(1.15).ring(1.6, 0, Math.PI * 2); p.dot(0, 0, 1.05); }},
+    chainMaster: { label: '连击大师', quality: 'rare', school: '', desc: '连招窗口 +250ms，第 3 段横扫 +50%',
+      draw: function (p) { p.w(1.7).move(-5.8, 1.2).line(5.8, 1.2); p.w(1.15).move(-5.8, -3.6).line(2.2, -3.6); p.move(-5.8, 6.0).line(4.6, 6.0); }},
+    huntMark: { label: '猎杀标记', quality: 'legendary', school: '', desc: '斩杀线提升至 50%',
+      draw: function (p) { p.w(1.7).ring(4.6, 0, Math.PI * 2); p.move(-6.9, 0).line(-3.2, 0); p.move(6.9, 0).line(3.2, 0); p.move(0, -6.9).line(0, -3.2); p.move(0, 6.9).line(0, 3.2); p.w(1.15).dot(0, 0, 1.5); }},
+    trackingCharm: { label: '追踪符', quality: 'rare', school: '', desc: '远程普攻追踪 +50%，弹速 +10%',
+      // 追踪符：一道**指向的弧** + 箭头（弹道会拐弯去追目标）
+      draw: function (p) { p.w(1.7).ring(5.2, -Math.PI * 0.78, Math.PI * 0.78); p.tri(4.6, 0, 1.0, -2.2, 1.0, 2.2); p.w(1.15).dot(-1.6, 0, 1.15); }},
+    piercingArrow: { label: '穿透之矢', quality: 'rare', school: '', desc: '远程普攻穿透 +1',
+      draw: function (p) { p.w(1.7).move(-5.4, 0).line(3.6, 0); p.w(1.15).poly([[3.6, -3.0], [6.6, 0], [3.6, 3.0]], true); p.w(1.7).move(-5.4, -3.0).line(-2.0, 0); p.move(-5.4, 3.0).line(-2.0, 0); }},
+    abyssMark: { label: '深渊印记', quality: 'rare', school: '', desc: '遗物三选一变四选一',
+      draw: function (p) { p.w(1.7).dot(0, -4.4, 1.5); p.w(1.15).dot(-4.4, 2.6, 1.5); p.dot(4.4, 2.6, 1.5); p.w(1.7).ring(6.6, 0, Math.PI * 2); }}
+  };
+
+  /** 取一件遗物的视觉定义（id 不认识时给一个中性的兜底，绝不返回 undefined） */
+  var RELIC_FALLBACK = {
+    label: '未知遗物', quality: 'common', school: '',
+    desc: '这件遗物不在图标表里 —— 请对照图鉴确认它的效果。',
+    draw: function (p) { p.w(1.7).ring(5.4, 0, Math.PI * 2); p.w(1.15).dot(0, -2.0, 1.2); p.move(0, 0.6).line(0, 4.0); }
+  };
+  function relicVis(id) { return RELIC_VIS[id] || RELIC_FALLBACK; }
+
+  /**
+   * 生成遗物图标纹理（白色符号 + 流派色环）
+   * ------------------------------------------------------------
+   * 一次把 26 件全画出来（每张 16×16，共约 26 KB 显存），不做按需：
+   * 玩家随时可能拿到任意一件，而"拿到的那一刻"正是最需要看清楚的时候，
+   * 那时再去生成纹理就是一次可感知的卡顿。
+   * 形状变化（被布局编辑器缩放）不重新生成 —— 16→22px 的放大靠纹理过滤即可。
+   */
+  function ensureRelicTextures(scene, g) {
+    var made = 0;
+    var d = deviceDpr();
+    Object.keys(RELIC_VIS).forEach(function (id) {
+      var name = 'rt_rl_' + id;
+      if (iconTextureReady(scene, name, 16, d)) return;
+      var vis = RELIC_VIS[id];
+      if (!g) g = scene.make.graphics({ x: 0, y: 0 }, false);
+      g.clear();
+      g.setScale(d);                   // 与 rt_ico_* 同一套做法：纹理按密度生成
+      // 内圈：流派色薄涂（8%）
+      var tint = SCHOOL_COLOR[vis.school] || SCHOOL_COLOR[''];
+      g.fillStyle(tint, 0.08);
+      g.fillCircle(8, 8, 7.0);
+      // 符号：白色，运行时按状态 tint。
+      // ⚠️ 每件遗物用一个**独立的笔**：笔宽是笔自己的状态（见 relicPen 的 lw），
+      //    共用一支笔会让上一件遗物留下的线宽串到下一件上去。
+      try { vis.draw(relicPen(g)); } catch (e) { console.warn('[战斗2D] 遗物图标绘制失败：' + id, e); }
+      // 色环：1px，画在符号之后（压住越界的笔画端点，不让符号糊出圆外）
+      g.lineStyle(1, tint, 0.92);
+      g.strokeCircle(8, 8, 7.0);
+      g.generateTexture(name, 16 * d, 16 * d);
+      made++;
+    });
+    if (g && made) g.destroy();
+    return made;
   }
 
   /**
@@ -1316,6 +2006,9 @@
         var s = {};
         if (style) { for (var k in style) { s[k] = style[k]; } }
         if (!s.fontFamily) s.fontFamily = FONT;
+        // 高密度屏：新建的文字直接按当前密度栅格化（见 applyTextDensity 的说明）。
+        // 密度变了由 applyTextDensity 统一补，这里只负责"开局就对"。
+        if (!s.resolution) s.resolution = deviceDpr();
         return orig.call(this, x, y, text, s);
       };
       proto.__dshFontPatched = true;
@@ -1355,7 +2048,7 @@
       this.difficulty = 'normal';
       this.env = ENV_THEMES.normal;
 
-      // 画面内界面状态（死亡 / 商店 / 确认框 / 文字视图）
+      // 画面内界面状态（死亡 / 商店 / 确认框）
       this.shopOpen = false;
       this.shopLayer = null;
       this.shopTab = 0;
@@ -1382,11 +2075,25 @@
 
       // 界面按钮命中区（画面坐标，随窗口重排）
       this.hudButtons = [];
-      this.panelButtons = { confirm: [], shop: [], death: [], map: [], choice: [], pause: [] };
+      this.panelButtons = { confirm: [], shop: [], death: [], map: [], choice: [], pause: [], relic: [], relicStats: [] };
       this.shopItemRects = [];
       this.nearestEnemy = null;
       this._viewPaused = false;
       this._pausedForConfirm = false;
+      // ===== 遗物条与遗物详情（v2.8.1）=====
+      this.relicStrip = null;          // 血条下方的常驻图标行
+      this.relicStripIcons = [];
+      this.relicRects = [];            // 遗物条命中区
+      this._relicStripVisible = false;
+      this.relicOpen = false;          // 遗物详情卡片是否打开
+      this.relicView = 'list';         // 'list' | 'stats'
+      this.relicPage = 0;
+      this.relicPageCount = 1;
+      this.relicRects2 = [];           // 详情卡片内的列表命中区（暂未做点击，留给后续）
+      this.relicLayer = null;
+      this.relicStatsLayer = null;
+      this._pausedForRelic = false;
+      this.hudDensity = 'auto';        // 由设置写入：auto / full / compact / minimal
 
       // 对象池：飘字文本复用（性能优化，长时间战斗不产生垃圾）
       this.floatPool = [];
@@ -1395,6 +2102,10 @@
       buildTextures(this);
       this.buildAnimations();
       this.buildBackground();
+
+      // HUD 密度：从已保存的设置里读一次（buildHud 会按它决定遗物条与属性面板的取舍）。
+      // 之后设置面板每次改动都会经 API.setSettings → applyHudDensity 实时推过来。
+      this.hudDensity = (state.settings && state.settings.hudDensity) || 'auto';
 
       // 物理分组：静态地形 + 敌人组（碰撞器只需建立一次）
       this.solids = this.physics.add.staticGroup();
@@ -1413,6 +2124,11 @@
       this._heroEnemyCollider = this.physics.add.collider(this.hero, this.enemyGroup);
 
       this.scale.on('resize', this.onResize, this);
+
+      // HUD 文字按当前密度栅格化一次（新建的文字由 installFontDefault 的工厂补丁
+      // 直接带上 resolution，这里补的是 buildHud 过程中已经建好的那一批）。
+      applyTextDensity(this.children.list);
+      state._dprDirty = false;
 
       this.ready = true;
       console.log('[战斗2D] 战斗场景就绪（横版实时战斗）');
@@ -1583,6 +2299,15 @@
       this._staminaShown = STAMINA.max;
       this._afterimageAt = 0;
 
+      // 连携（技巧资源；设计说明见文件里 LINK 那一段）
+      // 局内**跨房间保留**、只有挨打才清零 —— 这是"敢不敢攒"的赌注所在
+      this.link = 0;
+      this.linkPips = null;
+      this._diveLinked = false;
+      // 织网者的网（B 项）：缠身剩余时间与可视
+      this.webUntil = 0;
+      this.webFx = null;
+
       // 狂怒（举盾）
       this.guarding = false;
       this.guardStartAt = 0;
@@ -1591,10 +2316,9 @@
       this.guardBlocked = false;
       this.blockCount = 0;
 
-      // 狂怒（实时重做）：一管进攻资源 + 满值后 6 秒狂怒状态
+      // 狂怒（实时重做）：一管进攻资源 + 满值后 6 秒狂怒状态（只手动触发）
       this.fury = 0;
       this.furyUntil = 0;
-      this.furyAutoAt = 0;
       this._furyFull = false;
       this._furyWasOn = false;
 
@@ -1762,6 +2486,7 @@
         self.statItems.push({ key: d.key, label: d.label, suffix: d.suffix || '', always: !!d.always, box: box, text: txt });
       });
       this.layoutStatPanel();
+      this.buildRelicStrip();
 
       // ===== 英雄技能（主动每层一次）：独立一行的胶囊，位置在 layoutHudButtons 里排 =====
       this.skillBtn = this.craftButton(this.hud, this.skillButtons, {
@@ -1812,7 +2537,16 @@
       this.targetPanel.add([this.targetHp]);
       this.targetTags.forEach(function (t) { self.targetPanel.add([t.gfx, t.text]); });
 
-      this.hud.add([this.hpText, this.shieldText, this.staminaText, this.sharpText, this.nameText,
+      // ⚠️ 狂怒数值 / 满怒提示必须在 hud 容器里（第 11 条）
+      // ------------------------------------------------------------
+      // 它们曾经漏加进 hud：坐标本身算得没错（条右缘 + 10，与生命 / 体力同一个
+      // meterTextX 口径），但对象留在**场景根**上 —— scrollFactor 还是 1、depth 还是 0，
+      // 于是相机一滚动，数字就跟着世界一起走。进房间时相机 scroll 恰好是 (0,0)，
+      // 看着分毫不差；人一走动、镜头一跟，数字就贴着条往左滑，最后压在条上。
+      // （hud 容器是 scrollFactor 0，里面的对象自己写 1 也没关系 —— 生命 / 体力
+      //   数值就是这样待着的，相机怎么动都钉在原处。）
+      this.hud.add([this.hpText, this.shieldText, this.staminaText, this.sharpText,
+        this.furyText, this.furyHint, this.nameText,
         this.statPanel, this.floorText, this.pointText, this.enemyCountText, this.roomText,
         this.envPanel, this.cursePanel, this.pulseText,
         this.potionText, this.hintText, this.comboText, this.centerMsg, this.guideArrow,
@@ -1821,24 +2555,28 @@
       this.hud.bringToTop(this.bossName);
       this.hud.bringToTop(this.bossText);
 
-      // ===== 画面内功能按钮（商店 / 图鉴 / 设置 / 退出）=====
+      // ===== 画面内功能按钮（商店 / 图鉴 / 设置 / 菜单）=====
       // 独立容器且层级最高：地图、商店、死亡面板打开时依然可用
       // ⚠️ 「文字界面」按钮已删：试炼并入经典后新版只有 2D 这一个视图，
       //    切老版（2.6）由侧边栏 / 2D 画面的 DOM 覆盖层负责，画内不再放同义按钮。
       this.uiBar = this.add.container(0, 0).setDepth(2600).setScrollFactor(0);
       [
+        // 「属性」：属性面板的完整明细入口。
+        // 以前它是遗物条上一颗 10px 的小字「▸ 属性」，只在属性面板收起时才露出，
+        // 而且正好和技能胶囊 / 按钮行挤在同一块地方 —— 手机上经常被压住、点不到。
+        // 现在它是这一行的正式成员，与图鉴 / 设置同款胶囊；同时它进了布局编辑器
+        // （单元 id = h.fn.stats），玩家可以单独拖动 / 缩放 / 隐藏它。
+        { id: 'stats', label: '属性', icon: 'stats', variant: 'ghost' },
         { id: 'shop', label: '商店', icon: 'shop', variant: 'gold' },
         { id: 'codex', label: '图鉴', icon: 'codex', variant: 'ghost' },
         // 设置入口必须在画布内：实时战斗为了不挡住「攻击」键，把右下角的
         // 侧边栏开关（☰）收起来了，而设置正挂在侧边栏里 —— 不补这一颗，
         // 手机上就没法进设置，「按键自定义」也就够不着。
-        { id: 'settings', label: '设置', variant: 'ghost' },
-        // 「更多」= 打开侧边栏（作弊 / 通关条件 / 图鉴 / 教程 / 存档管理 / 难度 / 切换老版 2.6）。
-        // 侧边栏本身是 DOM（z-index 100002 > 画布 9000），文字界面与 2D 画面**共用同一套**
-        // —— 这就是"在 2D 画面里也能看到文字界面那些按钮"的实现方式：不重画第二套 UI。
-        // 由宿主接 bridge.openMenu 打开（引擎不认识侧边栏，保持表现层无业务语义）。
-        { id: 'more', label: '更多', variant: 'ghost' },
-        { id: 'quit', label: '退出', icon: 'quit', variant: 'danger' }
+        { id: 'settings', label: '设置', icon: 'settings', variant: 'ghost' },
+        // 「菜单」= 本局中枢（原先的「更多」+「退出」两颗合并而来，见 HUD_BTN_LABELS 的说明）。
+        // 打开的是**画布内**的菜单界面：本局状态 + 继续 / 结束 + 一整套系统功能，
+        // 全部由引擎自己绘制（不再借 DOM 侧边栏这个中间层）。
+        { id: 'menu', label: '菜单', icon: 'menu', variant: 'ghost' }
       ].forEach(function (d) {
         self.craftButton(self.uiBar, self.hudButtons, {
           action: d.id, label: d.label, icon: d.icon, variant: d.variant,
@@ -1896,12 +2634,13 @@
         this.updateSkillHud();
       }
 
-      // ===== 常驻功能按钮：接在技能胶囊下面（文字界面 / 商店 / 图鉴 / 设置 / 退出试炼）=====
+      // ===== 常驻功能按钮：接在技能胶囊下面（商店 / 图鉴 / 设置 / 菜单）=====
       var bh = Math.max(24, Math.round(28 * k));
       var rowTop = (this.skillBtn ? (this.skillBtn.y + skillH / 2) : statBottom) + gapY;
       var by = rowTop + bh / 2;
       var gapX = Math.round(8 * k);
-      this.layoutPillRow(this.hudButtons, x0, by, bh, gapX);
+      // maxRight = 画面右边界留 12px：窄屏上让整行等比收缩，绝不把「菜单」推出屏幕
+      this.layoutPillRow(this.hudButtons, x0, by, bh, gapX, W - 12);
       this._hudRowBottom = by + bh / 2;
 
       // 触摸设备 + 低高度横屏：目标面板要挪到顶部中央（见下），层主名字给它让一行
@@ -1956,7 +2695,13 @@
       var rightLeft = W - 24 - (this._envPanelW || ENV.panelW);
       var minTop = 0;
       if (leftRight >= rightLeft) {
-        minTop = (this.targetPanel.visible ? (this.targetPanel.y + this._tp.h) : this._hudRowBottom)
+        // 左列的下沿：环境面板要整块让到它下面去。
+        // 遗物条在场时它把属性面板推低了 RELIC_ROW_H，这里必须跟着 ——
+        // 少算这一行，窄屏上环境面板就会压在遗物条上。
+        var leftBottom = this._relicStripVisible
+          ? (RELIC_ROW_CY + RELIC_ROW_H / 2 + 6)
+          : this._hudRowBottom;
+        minTop = (this.targetPanel.visible ? (this.targetPanel.y + this._tp.h) : leftBottom)
           + Math.round(10 * k);
       }
       if ((this._envHudMinTop || 0) !== minTop) {
@@ -2249,6 +2994,9 @@
       if (!list || !list.length) return null;
       for (var i = 0; i < list.length; i++) {
         var b = list[i];
+        // 编辑器里隐藏掉的按钮不参与命中：它已经不可见，却还占着一个热区，
+        // 玩家点空气会开面板（"点了一下没反应 / 反而开了别的界面"）。
+        if (!b || b._hidden) continue;
         var pad = b.pad || 2;
         if (p.x >= b.x - pad && p.x <= b.x + b.w + pad && p.y >= b.y - b.h / 2 - pad && p.y <= b.y + b.h / 2 + pad) return b;
       }
@@ -2279,6 +3027,26 @@
           if (cb.action === 'yes') this.confirmYes(); else this.confirmNo();
         }
         return true;   // 严格模态：吞掉其余点击
+      }
+      // 遗物条最优先：它压在 HUD 左列上，且下面就是战场 ——
+      // 放在功能按钮之后判定的话，点图标会先被别的热区吃掉。
+      if (!this.panelOverlayOpen()) {
+        var rh = this.relicHitTest(p);
+        if (rh) {
+          sfx('click');
+          this.openRelicPanel();
+          return true;
+        }
+      }
+      if (this.relicOpen) {
+        if (this.relicView === 'stats') {
+          var rsb = this.hitBtnList(p, pb.relicStats);
+          if (rsb) { sfx('click'); this.onRelicAction(rsb.action); return true; }
+        } else {
+          var rb = this.hitBtnList(p, pb.relic);
+          if (rb) { sfx('click'); this.onRelicAction(rb.action); return true; }
+        }
+        return true;   // 模态：吞掉其余点击（与图鉴 / 商店一致）
       }
       // 常驻功能按钮：面板打开时整行已被 syncUiBarVisibility 收起 ——
       // 命中必须同步跳过，否则会出现「点在图鉴 / 结算面板上，触发的却是
@@ -2315,6 +3083,39 @@
       return false;
     }
 
+    /** 遗物详情卡片的动作分发（列表页 / 属性页共用一套动作名） */
+    onRelicAction(action) {
+      if (action === 'relic:close') { this.closeRelicPanel(); return; }
+      if (action === 'relic:stats') {
+        // 列出遗物 → 属性明细：两页互斥，切换时把另一层收干净
+        this.relicView = 'stats';
+        if (this.relicLayer) { this.destroyLayer('relicLayer'); this.relicLayer = null; }
+        this.panelButtons.relic = [];
+        this.buildRelicStatsLayer();
+        return;
+      }
+      if (action === 'relic:statsBack') {
+        // 没有遗物时不该"返回遗物列表"——那会进入一张写着"本局还没有遗物"的
+        // 空卡片，而玩家本来就是从「属性」按钮直接进来的，没有列表可退。
+        // 这时返回按钮的真实语义是"关闭"，按钮文案在 buildRelicStatsLayer 里
+        // 已经跟着改成「返回战斗」。
+        if (!(this.relics || []).length) { this.closeRelicPanel(); return; }
+        this.relicView = 'list';
+        if (this.relicStatsLayer) { this.destroyLayer('relicStatsLayer'); this.relicStatsLayer = null; }
+        this.panelButtons.relicStats = [];
+        this.buildRelicLayer();
+        return;
+      }
+      if (action === 'relic:prev') {
+        if (this.relicPage > 0) { this.relicPage--; this.buildRelicLayer(); }
+        return;
+      }
+      if (action === 'relic:next') {
+        if (this.relicPage < (this.relicPageCount || 1) - 1) { this.relicPage++; this.buildRelicLayer(); }
+        return;
+      }
+    }
+
     /**
      * 盯住设置面板的开关：面板关掉后恢复战斗。
      * 用 MutationObserver 而不是定时轮询 —— 面板可能被好几种方式关掉
@@ -2340,7 +3141,7 @@
     }
 
     /**
-     * DOM 面板停战 / 复战（设置面板与宿主「更多」侧边栏共用）
+     * DOM 面板停战 / 复战（设置面板与宿主侧边栏共用）
      * ------------------------------------------------------------
      * 为什么不用 pauseForView()：那个会 `scene.pause()`（整场景停更），
      * 恢复必须配一次 `resumeFromView()`；而 DOM 面板会被**好几种方式**关掉
@@ -2369,7 +3170,7 @@
       this.clearStaleInput();
       // 别的画内面板还开着就先别放开物理（与 _resumeFromPanelPause 同一口径）
       if (!this.mapOpen && !this.shopOpen && !this.deathOpen && !this.confirmOpen &&
-          !this.codexOpen && !this.choiceOpen && !this.pauseOpen) {
+          !this.codexOpen && !this.choiceOpen && !this.pauseOpen && !this.relicOpen) {
         try { this.physics.world.resume(); } catch (e) { /* 忽略 */ }
       }
       if (this.touchUI) this.touchUI.setVisible(this._lastInputWasTouch === true);
@@ -2377,8 +3178,38 @@
       return true;
     }
 
-    /** 常驻功能按钮：商店 / 图鉴 / 设置 / 退出 */
+    /**
+     * 应用 HUD 密度（v2.8.1）
+     * ------------------------------------------------------------
+     * 三档 + 自动：
+     *   auto    按屏幕自动（默认）—— 宽屏给完整信息，窄屏自动收
+     *   full    完整：属性面板 + 遗物条都常驻
+     *   compact 精简：收起属性面板，但保留遗物条
+     *   minimal 极简：只留生命 / 体力 / 狂怒三条，其余信息全部进详情卡片
+     *
+     * 存在的理由：用户的两条诉求是矛盾的 ——「要看到更多信息」与
+     * 「不要让按钮和信息铺满屏幕」。这不是一道能替所有人拍板的题：
+     * 大屏玩家想看全，小屏玩家想干净。做成可选之后，两边都不必被牺牲。
+     */
+    applyHudDensity() {
+      var d = (state.settings && state.settings.hudDensity) || this.hudDensity || 'auto';
+      if (d === this.hudDensity) return false;
+      this.hudDensity = d;
+      this.refreshRelicStrip();
+      this.layoutStatPanel();
+      this.layoutHudButtons(this.scale.width);
+      return true;
+    }
+
+    /** 常驻功能按钮（属性 / 商店 / 图鉴 / 设置 / 菜单） */
     onHudAction(id) {
+      if (id === 'stats') {
+        // 「属性」= 属性明细页（8 项数值 + 说明）。属性面板收起时这是它唯一的出口，
+        // 属性面板显示时它仍然是"看完整说明"的入口 —— 所以两颗常驻，不按状态隐藏。
+        sfx('click');
+        this.openRelicStatsPage();
+        return;
+      }
       if (id === 'shop') {
         if (this.shopOpen) this.closeShop(); else this.openShop();
         return;
@@ -2402,16 +3233,9 @@
         this.watchSettingsClosed();
         return;
       }
-      if (id === 'more') {
-        // 「更多」交给宿主：它负责冻结战斗 + 打开侧边栏（DOM，文字界面同一套）
-        sfx('click');
-        if (callBridge('openMenu')) return;
-        this.showCenter('菜单不可用', '#ffd76a');
-        return;
-      }
-      if (id === 'quit') {
-        // 先开暂停菜单：那里有「继续战斗 / 结束本局」，比直接弹确认框多一次反悔机会。
-        // 宿主的 Esc 键也走同一个入口，两条路径行为一致。
+      if (id === 'menu') {
+        // 菜单 = 本局中枢，就地开在画布内（宿主的 Esc 键走同一个入口，两条路径行为一致）。
+        // 打开后玩家能继续 / 结束本局，也能进设置 / 作弊 / 图鉴 / 存档等一整套系统功能。
         // 已经倒下 / 正在结算时 openPauseMenu 会返回 false，落到下面的原逻辑兜底。
         if (this.openPauseMenu()) return;
         // 撤离确认要说清「现在走能拿到什么」—— 这是「稳 vs 贪」那个抉择的决策依据，
@@ -2441,17 +3265,18 @@
     panelOverlayOpen() {
       return !!(this.mapOpen || this.shopOpen || this.codexOpen ||
                 this.deathOpen || this.confirmOpen ||
-                this.choiceOpen || this.pauseOpen || this._viewPaused);
+                this.choiceOpen || this.pauseOpen || this.relicOpen || this._viewPaused);
     }
 
     /**
-     * 常驻功能按钮行（文字界面 / 商店 / 图鉴 / 设置 / 退出试炼）的显隐
+     * 常驻功能按钮行（商店 / 图鉴 / 设置 / 菜单）的显隐
      * ------------------------------------------------------------
      * 面板一打开就整行收起。每个面板都自带关闭按钮（商店 / 图鉴的「关闭」、
-     * 死亡结算的「试炼商店 / 退出试炼」、撤离确认的「继续战斗」），
+     * 死亡结算的「商店 / 结束本局」、撤离确认的「继续战斗」），
      * 所以收起这排按钮不会把玩家困在面板里。
-     * 面板打开期间战斗虽然被暂停，但场景 update 仍在跑（只有切文字界面才会
-     * scene.pause），因此统一在这里每帧对齐状态，不必去每个开关点插调用。
+     * 面板打开期间战斗虽然被暂停，但场景 update 仍在跑（只有 pauseForView
+     * 那条路会 `scene.pause()`，DOM 全屏面板走的是 freezeForDom 的逻辑冻结），
+     * 因此统一在这里每帧对齐状态，不必去每个开关点插调用。
      */
     syncUiBarVisibility() {
       if (!this.uiBar) return;
@@ -2573,6 +3398,16 @@
       if (this.shopOpen) { this.destroyLayer('shopLayer'); this.buildShopLayer(W, H); }
       if (this.codexOpen) { this.destroyLayer('codexLayer'); this.buildCodexLayer(W, H); }
       if (this.confirmOpen) { this.destroyLayer('confirmLayer'); this.buildConfirmLayer(W, H); }
+      // 遗物卡片：尺寸变化会改变每页装得下几行，必须按新尺寸重画
+      if (this.relicOpen) {
+        if (this.relicView === 'stats') {
+          if (this.relicStatsLayer) { this.destroyLayer('relicStatsLayer'); this.relicStatsLayer = null; }
+          this.buildRelicStatsLayer(W, H);
+        } else {
+          if (this.relicLayer) { this.destroyLayer('relicLayer'); this.relicLayer = null; }
+          this.buildRelicLayer(W, H);
+        }
+      }
 
       // 最后叠一层玩家自定义：上面刚把基准位置算好，这里覆盖成玩家要的位置。
       // 基准刚重算过，之前的「已应用偏移」记录必须作废 —— 不清的话 applyCustomLayout
@@ -2621,6 +3456,11 @@
       this[name] = null;
       this._hoverBtn = null;   // 层被销毁后不能继续持有悬停按钮引用
       this._hoverRow = null;
+      // 菜单层额外持有「难度胶囊」的引用（切难度只重画它们，不整层重建）——
+      // 层没了就必须一起清，否则下次刷新会 paint 到已经销毁的显示对象上。
+      // 统一放在这里而不是各调用点：销毁路径有四条（关闭 / 重画 / 重排 / 转屏），
+      // 分散写迟早漏一条。
+      if (name === 'pauseLayer') this._menuDiffBtns = null;
     }
 
     /**
@@ -3289,6 +4129,16 @@
           o.setAlpha(1);
           if (wasHidden) o.setVisible(true);
         });
+        // ⚠️ 血条的子对象宽高是靠 setDisplaySize（本质就是 scaleX/scaleY）摆出来的，
+        //    上面那句 setScale(1) 会把它们放大回**纹理**宽度：252 → 256（纹理按 8 对齐），
+        //    于是点一下「重置」，条就粗了 4px、旁边的数值也跟着右移 4px。
+        //    这里按逻辑宽高重新摆一次，把几何还回去。
+        u.meters.forEach(function (m) {
+          if (!m) return;
+          if (m.track) m.track.setDisplaySize(m.w, m.trackH);
+          if (m.fill) m.fill.setDisplaySize(m.w, m.fillH);
+          if (m.trailImg) m.trailImg.setDisplaySize(m.w, m.fillH);
+        });
         // 按钮类单元：样式走 applyButtonStyle（尺寸在数据上，不在 scale 上）
         u.btns.forEach(function (b) { if (b) self.applyButtonStyle(b, 1, 1, false); });
         if (self._hiddenUnits) delete self._hiddenUnits[x];
@@ -3393,9 +4243,14 @@
       this.counterUntil = 0; this.dodgeCounterUntil = 0; this.diveCounterUntil = 0;
       this.blockCount = 0;
       // 新一局：狂怒归零
-      this.fury = 0; this.furyUntil = 0; this.furyAutoAt = 0;
+      this.fury = 0; this.furyUntil = 0;
       this._furyFull = false; this._furyWasOn = false;
       this.paintFuryMeter();
+      // 新一局：连携归零（局内跨房间保留，见 LINK 的说明）
+      this.link = 0; this._diveLinked = false;
+      this.paintLinkMeter();
+      // 新一局：网的状态清空
+      this.webUntil = 0;
       // 英雄形象：每位英雄一套专属精灵（宿主在 startRun 里传 heroId）
       this.setHeroLook(d.heroId || (d.skill && d.skill.id) || this.heroLookId || 'warrior');
       // 诅咒 / 环境效果（宿主在 startRun / 换层时传入）
@@ -3530,7 +4385,7 @@
       this.refreshHud();
     }
 
-    // ---------- 结束 / 视图切换 ----------
+    // ---------- 结束本局 ----------
     endRun(reason) { this.finishRun(reason); }
 
     /**
@@ -3562,20 +4417,24 @@
       this.shopOpen = false; this.confirmOpen = false;
       this.pauseOpen = false; this.choiceOpen = false;
       this.deathOpen = false; this.codexOpen = false;
+      this.relicOpen = false;
       this.mapOpen = false;
       this._pausedForPause = false;
       this._pausedForConfirm = false;
       this._pausedForChoice = false;
+      this._pausedForRelic = false;
       this.pendingMapAfterShop = false;
       if (this.touchUI) this.touchUI.setVisible(false);
       this.destroyLayer('shopLayer'); this.destroyLayer('confirmLayer');
       this.destroyLayer('pauseLayer'); this.destroyLayer('choiceLayer');
       this.destroyLayer('deathLayer'); this.destroyLayer('codexLayer');
+      this.destroyLayer('relicLayer'); this.destroyLayer('relicStatsLayer');
       this.destroyLayer('mapLayer');
       if (this.panelButtons) {
         this.panelButtons.shop = []; this.panelButtons.confirm = [];
         this.panelButtons.pause = []; this.panelButtons.choice = [];
         this.panelButtons.death = []; this.panelButtons.map = [];
+        this.panelButtons.relic = []; this.panelButtons.relicStats = [];
       }
       this.syncUiBarVisibility();
       if (hasBridge('exit')) { callBridge('exit', result); return; }
@@ -3599,6 +4458,12 @@
       this.destroyLayer('confirmLayer');
       this.destroyLayer('pauseLayer');
       this.destroyLayer('choiceLayer');
+      // 遗物面板的两张卡片也要一起收：它是一对互斥的层（列表 / 属性），
+      // 关闭路径同样只有 closeRelicPanel 一条 —— 静默收尾漏掉就会留在画布上。
+      this.destroyLayer('relicLayer');
+      this.destroyLayer('relicStatsLayer');
+      this.relicOpen = false;
+      this._pausedForRelic = false;
       this.choiceOpen = false;
       this.pauseOpen = false;
       if (this.mapOpen) {
@@ -3606,7 +4471,7 @@
         this.destroyLayer('mapLayer');
         try { this.physics.world.resume(); } catch (e) { /* 忽略 */ }
       }
-      if (this.panelButtons) this.panelButtons = { confirm: [], shop: [], death: [], map: [], choice: [], pause: [] };
+      if (this.panelButtons) this.panelButtons = { confirm: [], shop: [], death: [], map: [], choice: [], pause: [], relic: [], relicStats: [] };
       this.shopItemRects = [];
       if (this.touchUI) this.touchUI.setVisible(this._lastInputWasTouch === true);
       this.syncUiBarVisibility();
@@ -3655,7 +4520,7 @@
       sfx('click');
     }
 
-    /** 传给宿主的实时战况快照（文字界面用它显示 2D 战斗数据） */
+    /** 实时战况快照（原消费方是文字界面，它随试炼关停移除后引擎内已无调用点） */
     buildSnapshot() {
       var self = this;
       var h = this.hero;
@@ -3686,7 +4551,7 @@
     }
 
     // ---------- 死亡结算（画面内，不再回文字界面）----------
-    /** 面板 / 文字界面期间的按键不该在恢复后「补发」（清掉 JustDown 残留） */
+    /** 面板期间（含被 DOM 全屏面板盖住期间）的按键不该在恢复后「补发」（清掉 JustDown 残留） */
     clearStaleInput() {
       var k = this.keys;
       if (k) ['attack', 'potion', 'jump', 'jump2', 'jump3', 'jump4', 'dodge', 'dodge2', 'guard', 'guard2', 'fury'].forEach(function (n) {
@@ -3707,7 +4572,7 @@
     useSkill() {
       var now = this.time.now, h = this.hero;
       if (!this.running || this.heroDead) return false;
-      // 面板 / 文字界面冻结期间战斗不推进，技能也不该生效
+      // 面板 / 被 DOM 全屏面板盖住期间战斗不推进，技能也不该生效
       if (this.mapOpen || this.shopOpen || this.codexOpen || this.deathOpen || this.confirmOpen || this._viewPaused) return false;
       if (!this.skill || !this.skill.activeName) {
         if (this.skill) this.showFloat(h.x, h.y - 70, '该英雄没有主动技能', UI.muted, 14);
@@ -3848,7 +4713,7 @@
         var dir = e.sprite.x >= h.x ? 1 : -1;
         e.sprite.setVelocity(dir * force, -160);
         e.hurtUntil = self.time.now + 140;
-        if (dmgMult > 0) self.damageEnemy(e, self.rollPlayerDamage(dmgMult), false);
+        if (dmgMult > 0) self.damageEnemy(e, self.rollPlayerDamage(dmgMult, false, null, { noLink: true }), false);
         self.spark(e.sprite.x, e.sprite.y - 26, 0x8ad8ff);
       });
     }
@@ -3870,7 +4735,7 @@
         var dir = e.sprite.x >= h.x ? 1 : -1;
         e.sprite.setVelocity(dir * 220, -220);
         self.showFloat(e.sprite.x, e.sprite.y - 74, tag || '爆发', UI.gold, 15);
-        self.damageEnemy(e, self.rollPlayerDamage(mult), false);
+        self.damageEnemy(e, self.rollPlayerDamage(mult, false, null, { noLink: true }), false);
       });
       this.spark(h.x, h.y - 26, color);
     }
@@ -3977,7 +4842,10 @@
         return false;
       }
 
-      h.stamina -= DODGE.cost;
+      // 滞空之羽：空中闪避不耗体力 —— 把"滞空机动"做成一条真能围绕它打的路线
+      var airborne = !(h.body.blocked.down || h.body.touching.down);
+      var freeAir = this.relicFx('airDodgeFree', 0) > 0 && airborne;
+      if (!freeAir) h.stamina -= DODGE.cost;
       this.staminaHoldUntil = now + STAMINA.delay;
       this.dodging = true;
       this.dodgeStartAt = now;
@@ -3986,6 +4854,13 @@
       // 无敌帧：闪避的全部意义在这里
       this.invulnUntil = Math.max(this.invulnUntil, now + DODGE.invuln);
       this.dodgeFxUntil = now + DODGE.invuln;
+      // 织网者：闪避把身上的网撕开 —— 这就是那一发网的解法。
+      // 放在"闪避的收益"里，而不是让玩家去别处找说明。
+      if (now < (this.webUntil || 0)) {
+        this.webUntil = 0;
+        this.showFloat(h.x, h.y - 120, '撕开蛛网', '#a8e88a', 17);
+        this.spark(h.x, h.y - 30, 0xa8e88a);
+      }
       // 闪避可取消攻击后摇与蓄力
       this.attacking = false;
       this.isCharging = false;
@@ -4059,6 +4934,7 @@
       h.perfectCount = (h.perfectCount || 0) + 1;
       this.perfectCount = h.perfectCount;
       this.addFury(FURY.gainPerfect);          // 完美闪避攒怒（技巧奖励）
+      this.addLink(1);                         // 完美闪避攒连携（技巧 → 可消费的资源）
 
       this.showFloat(h.x, h.y - 96, '完美闪避!', UI.gold, 22);
       this.spark(h.x, h.y - 26, 0xffd76a);
@@ -4447,7 +5323,12 @@
           shade: '会飞，能绕过地形直线追你；近身突进快但没有远程手段。',
           lord: '每 2.8~4.4 秒跳起来砸地，落点半径 160px，落地前有影子可读。',
           shadowking: '层主的强化版：更宽、更抗打，砸地频率相同但伤害更高。',
-          claw: '最快的普通怪之一，纯贴身扑击，没有远程手段。'
+          claw: '最快的普通怪之一，纯贴身扑击，没有远程手段。',
+          // B 项三只机制型敌人（2.8 新增）：图鉴里那一行蓝字说明的就是"怎么破它"。
+          // 不写清解法的话，玩家只会觉得"这怪打不动/怎么突然走不动了"，机制等于没做。
+          bulwark: '正面免疫：站在地上平砍打不动，只能跳劈（从上方砸）或绕到背后。它转身有 700ms 延迟 —— 那个延迟就是绕后的窗口，硬拼是打不动的。',
+          weaver: '保持 240px 距离吐网（最远 560px）：网不掉血，只把移动压到 45%、缠身 5.2 秒，而闪避可以直接把网撕开。贴上去它没有别的攻击手段。',
+          sacrificer: '自己不追也不打，每 3~4 秒给 320px 内的同伴套一层血盾（6 + 层数 × 1.2，中盾的怪身上有青色环），自己也拿一半 —— 先点掉它，否则每一下伤害都被分摊。'
         };
         Object.keys(ENEMY_TYPES).forEach(function (key) {
           var d = ENEMY_TYPES[key];
@@ -4488,7 +5369,7 @@
             ['为什么不给防御', '举盾与走位不攒怒 —— 它奖励的是"打得凶"，正好和奖励"会躲"的体力形成一组对立'],
             ['狂怒状态', '攻击间隔 ÷1.35 · 伤害 ×1.5 · 移动速度 ×1.25 · 不再被后仰打断'],
             ['代价', '受到的伤害 +15%（狂暴而不设防）'],
-            ['不会浪费', '满值后 12 秒没按 R 会自动爆发，HUD 上有提示']
+            ['不会浪费', '满怒后不会自动爆发，一直存着等你按 R —— 什么时候用由你决定']
           ], note: '节奏感：体力管「活下来」，狂怒管「打得进去」——两者都靠打得好，但一个奖励规避、一个奖励压制。' }
         ];
 
@@ -5230,16 +6111,21 @@
      */
     _resumeFromPanelPause() {
       if (this.mapOpen || this.shopOpen || this.deathOpen || this.confirmOpen ||
-        this.codexOpen || this.choiceOpen || this.pauseOpen) return false;
+        this.codexOpen || this.choiceOpen || this.pauseOpen || this.relicOpen) return false;
       try { this.physics.world.resume(); } catch (e) { /* 忽略 */ }
       return true;
     }
 
     // ============================================================
-    //  暂停菜单（画内）
+    //  菜单（画内 · 本局中枢）
     //  ------------------------------------------------------------
-    //  与 pauseForView 的区别：那个是「切到文字界面」（宿主隐藏画布、显示文字面板）；
-    //  这个是**就地暂停** —— 不换视图、不通知宿主，玩家在战场原地看着菜单继续或退出。
+    //  与 pauseForView 的区别：那个会 `scene.pause()`（整场景停更，宿主让 2D
+    //  彻底停住时用，见它的说明）；
+    //  这个是**就地暂停** —— 画面照旧、不通知宿主，玩家在战场原地看着菜单继续 / 结束 / 调设置。
+    //
+    //  v2.8：入口与内容都重做过。原来 HUD 上是「更多」（开 DOM 侧边栏）与
+    //  「退出」（其实是开暂停菜单）两颗，名字和行为还对不上；现在合并成一颗
+    //  「菜单」，打开的就是下面这个中枢界面，Esc 走同一个入口。
     // ============================================================
     openPauseMenu() {
       if (this.pauseOpen || this._finished || this.heroDead) return false;
@@ -5266,6 +6152,7 @@
       if (!this.pauseOpen) return false;
       this.pauseOpen = false;
       this._pausedForPause = false;
+      // destroyLayer 会顺手清掉 _menuDiffBtns（见那里的说明）
       this.destroyLayer('pauseLayer');
       if (this.panelButtons) this.panelButtons.pause = [];
       this._resumeFromPanelPause();
@@ -5274,47 +6161,307 @@
       return true;
     }
 
+    /** 菜单里的系统功能项（顺序 = 玩家排查问题的常见顺序：先看条件，再改设置，最后才是作弊） */
+    menuEntries() {
+      return [
+        { id: 'condition', label: '通关条件', icon: 'condition' },
+        { id: 'codex', label: '图鉴', icon: 'codex' },
+        { id: 'tutorial', label: '教程', icon: 'tutorial' },
+        { id: 'settings', label: '设置', icon: 'settings' },
+        { id: 'save', label: '存档管理', icon: 'save' },
+        { id: 'cheat', label: '作弊', icon: 'cheat' },
+        { id: 'legacy', label: '切换老版 2.6', icon: 'legacy' }
+      ];
+    }
+
+    /**
+     * 菜单主体：本局中枢
+     * ------------------------------------------------------------
+     * v2.8 重绘。原来是「已暂停 + 两颗按钮」的小窗，而侧边栏那 8 项功能
+     * （作弊 / 通关条件 / 设置 / 教程 / 图鉴 / 存档管理 / 难度 / 切换老版）
+     * 得先点 HUD「更多」打开 DOM 侧边栏才够得着 —— 同一块屏幕上两套入口、两种风格。
+     * 现在合并成一个中枢：左边「你现在的处境」、右边「你能做的事」、
+     * 底部两颗决策按钮。全部画布内绘制，DOM 只保留本身就是 DOM 的重面板。
+     *
+     * 尺寸**由内容算出来**（先量几何再画）：窄屏上固定高度必然顶出画面。
+     */
     buildPauseLayer(sizeW, sizeH) {
+      var self = this;
       var W = (sizeW && sizeW >= 40) ? sizeW : this.scale.width;
       var H = (sizeH && sizeH >= 40) ? sizeH : this.scale.height;
       if (W < 40 || H < 40) return null;
-      var mini = W < 700;
+      // ⚠️ 重画前必须先销毁旧层。
+      //    这条路径会被「在菜单里切难度」走到（换完难度要重画一次刷新高亮），
+      //    不销毁的话每切一次就**叠一层**：dim 越叠越黑、旧层的按钮仍然留在
+      //    场景里被渲染，而 closePauseMenu / 重排都只认最后建的那一层 ——
+      //    前面几层永远回收不掉。实测连点几次难度之后画面就拖不动了。
+      if (this.pauseLayer) this.destroyLayer('pauseLayer');
+      // 紧凑模式：手机横屏（≈800×360）与任何偏矮的窗口 —— 那两种尺寸下双栏会挤成一条缝
+      var mini = W < 880 || H < 560;
+      var pad = mini ? 16 : 28;
+      var gapG = mini ? 8 : 12;
+      var cellH = mini ? 40 : 46;
+      var diffH = mini ? 30 : 34;
+      var headH = mini ? 54 : 64;
+      var footH = mini ? 54 : 66;
+      var stripH = mini ? 30 : 0;
+
+      // ---------- 先量几何，再画 ----------
+      var pw = Math.min(W - (mini ? 20 : 120), 940);
+      // 左栏宽只依赖 pw（不依赖高度）—— 所以不会和下面的 ph 互为因果
+      var lw = mini ? 0 : Math.round(Math.min(296, pw * 0.34));
+      var rw = pw - pad * 2 - lw - (mini ? 0 : 25);
+      var cols = rw >= 640 ? 4 : (rw >= 460 ? 3 : (rw >= 320 ? 2 : 1));
+      var entries = this.menuEntries();
+      var rows = Math.max(1, Math.ceil(entries.length / cols));
+      var gridH = rows * cellH + (rows - 1) * gapG;
+      var contentH = gridH + (mini ? 12 : 16) + diffH;
+      // 左栏要留出「诅咒明细」的地方：只留计数的话，中诅咒的玩家在菜单里
+      // 看到的还是个说不清代价的数字（而那正是最该看清楚的时候）。
+      // 上限 4 行 —— 再多就交给「…另有 N 条」，不能让诅咒把面板撑出屏幕。
+      var curseLines = mini ? 0 : Math.min((this.curses || []).length, 4);
+      var ph = Math.min(
+        headH + stripH + contentH + footH + (mini ? 16 : 28) + (curseLines ? 24 + curseLines * 18 : 0),
+        H - 24);
+
+      var px = Math.round((W - pw) / 2), py = Math.round((H - ph) / 2);
+
       var L = this.add.container(0, 0).setDepth(2480).setScrollFactor(0);
       this.pauseLayer = L;
       this.panelButtons.pause = [];
-
-      this.addDim(L, W, H, 0.72);
-      var pw = Math.min(W * 0.82, mini ? 340 : 380);
-      var ph = mini ? 170 : 198;
-      var px = Math.round(W / 2 - pw / 2), py = Math.round(H / 2 - ph / 2);
+      this.addDim(L, W, H, 0.82);
       this.addPanel(L, px, py, pw, ph, {});
-      L.add(this.add.text(W / 2, py + (mini ? 18 : 24), '已暂停', {
-        fontSize: (mini ? 18 : 22) + 'px', color: UI.title, fontStyle: 'bold', letterSpacing: 3
-      }).setOrigin(0.5, 0));
-      L.add(this.add.text(W / 2, py + (mini ? 44 : 56),
-        '第 ' + this.floor + ' 层 · 生命 ' + Math.round(this.hero.hp) + '/' + this.hero.maxHp +
-        ' · 金币 ' + Math.round(this.points), {
-          fontSize: (mini ? 11 : 13) + 'px', color: UI.sub
-        }).setOrigin(0.5, 0));
 
-      var bw = mini ? 126 : 148, bh = mini ? 36 : 42, gap = 14;
-      var by = py + ph - (mini ? 32 : 38);
-      this.uiButton(L, this.panelButtons.pause, 'resume', '继续战斗', W / 2 - bw - gap / 2, by, bw, bh, true);
-      this.uiButton(L, this.panelButtons.pause, 'quit', '结束本局', W / 2 + gap / 2, by, bw, bh, false);
+      // ---------- 面板头：标题 + 一行元信息 + Esc 提示 ----------
+      var titleFs = mini ? 16 : 21;
+      var metaFs = mini ? 10 : 12;
+      var headY = py + (mini ? 12 : 20);
+      L.add(this.add.text(px + pad, headY, '深渊回廊', {
+        fontSize: titleFs + 'px', color: UI.title, fontStyle: 'bold', letterSpacing: mini ? 3 : 5
+      }).setOrigin(0, 0));
+      var diffName = DIFF_CN[this.difficulty] || '';
+      L.add(this.add.text(px + pad, headY + titleFs + (mini ? 4 : 7),
+        '已暂停 · 第 ' + this.floor + ' 层' + (diffName ? ' · ' + diffName : '') +
+        ' · 击杀 ' + (this.kills || 0), {
+          fontSize: metaFs + 'px', color: UI.sub
+        }).setOrigin(0, 0));
+      // 键盘用户的返回路径。刻意不做成右上角的 ✕：底部「继续战斗」已经是同一件事，
+      // 一个动作摆两个控件只会让玩家犹豫按哪个。
+      if (!mini) {
+        L.add(this.add.text(px + pw - pad, headY + 6, 'Esc 返回战场', {
+          fontSize: metaFs + 'px', color: UI.muted
+        }).setOrigin(1, 0));
+      }
+
+      var bodyTop = headY + titleFs + metaFs + (mini ? 18 : 30);
+      var footTop = py + ph - footH;
+
+      // ---------- 主体 ----------
+      if (!mini) {
+        this.menuStatusCard(L, px + pad, bodyTop, lw, footTop - bodyTop - 6);
+        this.menuFunctionGrid(L, px + pad + lw + 25, bodyTop, rw, footTop - bodyTop - 6,
+          entries, cols, cellH, gapG, diffH);
+      } else {
+        this.menuStatusStrip(L, px + pad, bodyTop);
+        var gridTop = bodyTop + stripH - 4;
+        this.menuFunctionGrid(L, px + pad, gridTop, pw - pad * 2, footTop - gridTop - 6,
+          entries, cols, cellH, gapG, diffH);
+      }
+
+      // ---------- 底部决策：继续 / 结束 ----------
+      var bw = mini ? 152 : 180, bh = mini ? 36 : 42, gapB = 16;
+      var bx0 = Math.round(W / 2 - (bw * 2 + gapB) / 2);
+      var by = footTop + (footH - 8) / 2;
+      this.craftButton(L, this.panelButtons.pause, {
+        action: 'resume', label: '继续战斗', shape: 'card', variant: 'primary',
+        x: bx0, y: by, w: bw, h: bh
+      });
+      this.craftButton(L, this.panelButtons.pause, {
+        action: 'quit', label: '结束本局', shape: 'card', variant: 'danger',
+        x: bx0 + bw + gapB, y: by, w: bw, h: bh
+      });
       return L;
     }
 
+    /**
+     * 左栏：本局状态卡
+     * ------------------------------------------------------------
+     * 「暂停」这个动作本身就该带信息量 —— 玩家按下 Esc 的动机往往正是
+     * 「我得停下来看清自己现在的处境」。所以这里不只报数，还把**诅咒明细**列出来：
+     * 诅咒在持续结算（腐化脉冲），只给一个计数说不清代价，而诅咒恰是 v2.8 里
+     * 「重新开始没清干净」那个 bug 的现场，摆在菜单里也便于玩家自己发现异常。
+     */
+    menuStatusCard(L, x, y, w, h) {
+      var self = this;
+      if (w < 60 || h < 80) return;
+      this.addPanel(L, x, y, w, h, {
+        fill: UI.box, fillAlpha: UI.boxAlpha, radius: UI.boxR,
+        line: UI.boxLine, lineAlpha: UI.boxLineAlpha
+      });
+      var pad = 16;
+      L.add(this.add.text(x + pad, y + 13, '本局', {
+        fontSize: '12px', color: UI.muted, fontStyle: 'bold', letterSpacing: 2
+      }).setOrigin(0, 0));
+
+      var curses = this.curses || [];
+      var rows = [
+        { k: '生命', v: Math.round(this.hero.hp) + ' / ' + this.hero.maxHp, c: UI.hpFrom },
+        { k: '护盾', v: String(Math.round(this.hero.shield || 0)), c: UI.shieldFrom },
+        { k: '体力', v: Math.round(this.hero.stamina) + ' / ' + this.hero.maxStamina, c: UI.stamFrom },
+        { k: '金币', v: String(Math.round(this.points)), c: UI.gold },
+        { k: '遗物', v: (this.relics || []).length + ' 件', c: UI.accent },
+        { k: '诅咒', v: curses.length + ' 条', c: curses.length ? UI.danger : UI.muted }
+      ];
+      var ry = y + 40, rh = 24;
+      rows.forEach(function (r) {
+        L.add(self.add.text(x + pad, ry, r.k, { fontSize: '12px', color: UI.sub }).setOrigin(0, 0.5));
+        L.add(self.add.text(x + w - pad, ry, r.v, {
+          fontSize: '13px', color: r.c, fontStyle: 'bold'
+        }).setOrigin(1, 0.5));
+        ry += rh;
+      });
+
+      if (!curses.length) return;
+      ry += 4;
+      L.add(this.add.text(x + pad, ry, '诅咒明细', {
+        fontSize: '11px', color: UI.muted, fontStyle: 'bold', letterSpacing: 2
+      }).setOrigin(0, 0.5));
+      ry += 19;
+      var room = Math.floor((y + h - 16 - ry) / 18);
+      var show = Math.max(0, Math.min(curses.length, room));
+      for (var i = 0; i < show; i++) {
+        L.add(this.add.text(x + pad + 6, ry, '· ' + curses[i], {
+          fontSize: '12px', color: UI.danger
+        }).setOrigin(0, 0.5));
+        ry += 18;
+      }
+      if (show < curses.length) {
+        L.add(this.add.text(x + pad + 6, ry, '…另有 ' + (curses.length - show) + ' 条', {
+          fontSize: '11px', color: UI.muted
+        }).setOrigin(0, 0.5));
+      }
+    }
+
+    /** 紧凑模式的一行状态摘要（没有左栏时用） */
+    menuStatusStrip(L, x, y) {
+      var curses = this.curses || [];
+      var txt = '生命 ' + Math.round(this.hero.hp) + '/' + this.hero.maxHp +
+        '   护盾 ' + Math.round(this.hero.shield || 0) +
+        '   体力 ' + Math.round(this.hero.stamina) + '/' + this.hero.maxStamina +
+        '   金币 ' + Math.round(this.points) +
+        '   遗物 ' + (this.relics || []).length +
+        '   诅咒 ' + curses.length;
+      L.add(this.add.text(x, y + 12, txt, {
+        fontSize: '12px', color: UI.sub
+      }).setOrigin(0, 0.5));
+    }
+
+    /**
+     * 右栏：系统功能网格 + 难度行
+     * ------------------------------------------------------------
+     * 全部是画布内控件（craftButton 的 card 形状，与商店 / 图鉴 / 死亡结算同一套），
+     * 图标用 ensureIconTextures 新画的那一批（同一笔宽，不用 emoji）。
+     * 整块在给定高度里**垂直居中**，于是同一个函数在桌面（矮而宽）和手机（高而窄）
+     * 上都不会把内容顶出面板。
+     */
+    menuFunctionGrid(L, x, y, w, h, entries, cols, cellH, gapG, diffH) {
+      var self = this;
+      var rows = Math.max(1, Math.ceil(entries.length / cols));
+      var gridH = rows * cellH + (rows - 1) * gapG;
+      var blockH = gridH + (diffH ? 16 + diffH : 0);
+      var top = y + Math.max(0, Math.round((h - blockH) / 2));
+      var gapX = 10;
+      var cw = (w - (cols - 1) * gapX) / cols;
+
+      entries.forEach(function (e, i) {
+        var r = Math.floor(i / cols), c = i % cols;
+        self.craftButton(L, self.panelButtons.pause, {
+          action: e.id, label: e.label, icon: e.icon, shape: 'card', variant: 'ghost',
+          x: Math.round(x + c * (cw + gapX)), y: Math.round(top + r * (cellH + gapG) + cellH / 2),
+          w: Math.round(cw), h: cellH
+        });
+      });
+
+      if (!diffH) return;
+      L.add(this.add.text(x, top + gridH + 10, '难度', {
+        fontSize: '11px', color: UI.muted, fontStyle: 'bold', letterSpacing: 2
+      }).setOrigin(0, 0.5));
+      var diffs = [['easy', '简单'], ['normal', '普通'], ['hard', '困难'], ['hell', '地狱'], ['custom', '自定义']];
+      var gapD = 6;
+      var dw = (w - (diffs.length - 1) * gapD) / diffs.length;
+      var dy = top + gridH + 16 + diffH / 2;
+      var diffBtns = [];
+      diffs.forEach(function (d, i) {
+        diffBtns.push(self.craftButton(L, self.panelButtons.pause, {
+          action: 'diff:' + d[0], label: d[1], shape: 'card',
+          // 当前难度用 primary 高亮。与「继续战斗」同色是刻意的：
+          // 它表示「现在生效的状态」，而不是一个待点的动作
+          variant: (self.difficulty === d[0]) ? 'primary' : 'plain',
+          x: Math.round(x + i * (dw + gapD)), y: Math.round(dy),
+          w: Math.round(dw), h: diffH
+        }));
+      });
+      // 留住这排胶囊的引用：切难度只重画它们，不整层重建（见 refreshMenuDifficulty）
+      this._menuDiffBtns = diffBtns;
+    }
+
+    /**
+     * 切难度后只刷新那排胶囊的高亮
+     * ------------------------------------------------------------
+     * 原来这里直接 buildPauseLayer() 整层重建 —— 菜单有 55 个显示对象
+     * （14 颗按钮 × 底板/图标/文字 + 面板 + 各处文字），实测一次 **17.95ms**，
+     * 比一帧预算还长：点一下难度就掉一帧，连点就是一串可见的卡顿。
+     * 而这件事真正变的只有 5 颗胶囊的语义色，重建其余 50 个对象纯属白做。
+     *
+     * 注意三个字段要一起改：craftButton 建立时按 variant 定了底板 tint
+     * 与文字颜色，只改 variant 的话重绘出来的还是旧色。
+     */
+    refreshMenuDifficulty() {
+      var self = this;
+      (this._menuDiffBtns || []).forEach(function (b) {
+        if (!b || !b.gfx || !b.gfx.scene) return;
+        var on = (b.action === 'diff:' + self.difficulty);
+        var want = on ? 'primary' : 'plain';
+        b.variant = want;
+        b.tint = on ? UI.cPrimary : UI.cPlain;
+        if (b.text) b.text.setColor(on ? '#d8fff0' : UI.sub);
+        self.paintButton(b);
+      });
+    }
+
     onPauseAction(action) {
+      if (!action) return;
       if (action === 'resume') { this.closePauseMenu(); return; }
       if (action === 'quit') {
-        // ⚠️ 顺序不能反：**必须先关掉暂停菜单，再弹结束确认框**。
-        //    两个都是画内图层，暂停层 depth 2480、确认层 2520 —— 即使 depth 已经
-        //    够了，留着暂停层也意味着"玩家点确认结束后，回退路径上还压着一个
-        //    已经没意义的暂停窗"。实测反馈是"要结束本局得先点继续战斗关掉暂停窗"，
-        //    根因就是这里把两层同时留着（当时确认层 depth 2400 还被 2480 压住）。
+        // ⚠️ 顺序不能反：**必须先关掉菜单，再弹结束确认框**。
+        //    两个都是画内图层，菜单层 depth 2480、确认层 2520 —— 即使 depth 已经
+        //    够了，留着菜单层也意味着"玩家点确认结束后，回退路径上还压着一个
+        //    已经没意义的菜单窗"。
         this.closePauseMenu();
         this.askQuit('确认结束本局？');
         return;
+      }
+      // 难度：交给宿主换（只有宿主知道难度怎么生效、怎么落存档），换完只刷新
+      // 那排胶囊的高亮。与侧边栏那个下拉是同一条路径，不会出现两套难度逻辑。
+      if (action.indexOf('diff:') === 0) {
+        var v = action.slice(5);
+        if (callBridge('setDifficulty', v)) {
+          // 立刻把引擎侧的难度标记也改掉再刷新：引擎真正的难度系数由宿主的
+          // 难度签名比对异步下发，这里若不等，刷新读到的还是旧值 ——
+          // 表现就是"点了困难，高亮还停在普通上"。
+          this.difficulty = v;
+          this.refreshMenuDifficulty();
+        } else {
+          this.showCenter('难度切换不可用', '#ffd76a');
+        }
+        return;
+      }
+      // 其余功能（通关条件 / 图鉴 / 教程 / 设置 / 存档管理 / 作弊 / 切换老版）本身就是
+      // DOM 面板，引擎不认识它们 —— 只把 id 交给宿主，由宿主打开对应界面，并在它
+      // 关闭后解冻战斗（经典2D.js 的 anyDomPanelOpen + MutationObserver 负责这一对）。
+      // 这样"引擎只画界面、宿主管业务"的边界没有被打破。
+      if (!callBridge('openPanel', action)) {
+        this.showCenter('该功能暂不可用', '#ffd76a');
       }
     }
 
@@ -5530,17 +6677,21 @@
       m.bodyTex = barTexture(this, key, fillH, 64, from, to);
       // 残影统一用生命色：任何血条上都能直接读出「刚掉了多少」
       m.trailTex = (key === 'hp') ? m.bodyTex : barTexture(this, 'hp', fillH, 64, UI.hpFrom, UI.hpTo);
+      // ⚠️ 纹理是"逻辑 × 密度"像素，显示尺寸必须给**逻辑**值，否则第一帧会按
+      //    纹理像素当逻辑像素画出去（宽度是实际的 d 倍）。placeMeter 会再算一次。
       if (opts.track !== false) {
-        m.track = this.add.image(0, 0, trackTexture(this, trackH, 64, m.tint)).setOrigin(0, 0.5);
+        m.track = this.add.image(0, 0, trackTexture(this, trackH, 64, m.tint))
+          .setOrigin(0, 0.5).setDisplaySize(64, trackH);
       }
       if (opts.glow) {
         m.glow = this.add.image(0, 0, glowTexture(this)).setOrigin(0.5, 0.5)
           .setTint(opts.glowTint != null ? opts.glowTint : UI.cPrimary).setAlpha(0.4);
       }
       if (opts.trail !== false) {
-        m.trailImg = this.add.image(0, 0, m.trailTex).setOrigin(0, 0.5).setAlpha(0.38);
+        m.trailImg = this.add.image(0, 0, m.trailTex).setOrigin(0, 0.5).setAlpha(0.38)
+          .setDisplaySize(64, fillH);
       }
-      m.fill = this.add.image(0, 0, m.bodyTex).setOrigin(0, 0.5);
+      m.fill = this.add.image(0, 0, m.bodyTex).setOrigin(0, 0.5).setDisplaySize(64, fillH);
       return m;
     }
 
@@ -5554,12 +6705,15 @@
       return out;
     }
 
-    /** 血条几何布局（可逐帧调用：只有宽度变化才重建纹理） */
+    /** 血条几何布局（可逐帧调用：只有宽度或密度变化才重建纹理） */
     placeMeter(m, x, y, w) {
       w = Math.max(4, Math.round(w));
       m.x = x; m.y = y;
-      if (m.w !== w) {
-        m.w = w;
+      m.wLogical = w;
+      var d = deviceDpr();
+      if (m.w !== w || m.px !== d) {
+        m.w = w; m.px = d;
+        m.texW = Math.round(Math.max(8, Math.ceil(w / 8) * 8) * d);   // 纹理像素宽
         m.bodyTex = barTexture(this, m.key, m.fillH, w, m.from, m.to);
         m.fill.setTexture(m.bodyTex).setDisplaySize(w, m.fillH);
         if (m.key !== 'hp') m.trailTex = barTexture(this, 'hp', m.fillH, w, UI.hpFrom, UI.hpTo);
@@ -5597,7 +6751,14 @@
     placeFuryText() {
       if (!this.furyText || !this.furyTextPos) return;
       var fx = this.meterTextX(this.furyMeter, this.furyTextPos.gap);
-      this.furyText.setPosition(fx == null ? this.furyTextPos.gap : fx, this.furyTextPos.y);
+      if (fx == null) {
+        // 兜底：条还没摆出来时贴在默认条宽之后，**不要**退到 x=10（那样文字会跑到
+        // 屏幕最左边，看起来就是"狂怒数值没贴在条旁边"）。见下面 meterTextX 的说明。
+        var m = this.furyMeter, tr = m && m.track;
+        fx = tr ? (tr.x + (tr.displayWidth || 252) + (this.furyTextPos.gap || 10))
+          : (24 + 252 + (this.furyTextPos.gap || 10));
+      }
+      this.furyText.setPosition(fx, this.furyTextPos.y);
     }
 
     /** 数值同步（只在数值变化时调用，不逐帧） */
@@ -5632,11 +6793,13 @@
       this.paintMeter(m);
     }
 
-    /** 血条绘制：位置 + 裁剪（1:1 纹理，裁剪即像素，不产生缩放失真） */
+    /** 血条绘制：位置 + 裁剪（纹理是"逻辑 × 密度"像素，裁剪值也按纹理像素算） */
     paintMeter(m) {
       var vis = m.visible !== false;
       var w = m.w, shown = clamp(m.shown, 0, 1), trail = clamp(m.trail, 0, 1);
-      var texW = Math.max(8, Math.ceil(w / 8) * 8);
+      var d = m.px || 1;
+      var texW = m.texW || Math.round(Math.max(8, Math.ceil(w / 8) * 8) * d);
+      var texH = Math.round(m.fillH * d);
       var dw = w * shown, dtr = w * trail, r = m.fillH / 2;
       if (dw > 0.6 && dw < r * 1.7) {
         // 极低血量：只留一个圆头，避免出现方角碎片
@@ -5647,13 +6810,13 @@
         if (m.dot && m.dot.visible) m.dot.setVisible(false);
         m.fill.setVisible(vis && dw > 0.6);
         if (dw > 0.6) {
-          m.fill.setPosition(m.x, m.y).setCrop(0, 0, Math.max(1, dw * texW / w), m.fillH);
+          m.fill.setPosition(m.x, m.y).setCrop(0, 0, Math.max(1, dw * texW / w), texH);
         }
       }
       if (m.trailImg) {
         if (vis && dtr > dw + 0.6) {
           m.trailImg.setVisible(true).setPosition(m.x, m.y)
-            .setCrop(0, 0, Math.max(1, dtr * texW / w), m.fillH);
+            .setCrop(0, 0, Math.max(1, dtr * texW / w), texH);
         } else if (m.trailImg.visible) {
           m.trailImg.setVisible(false);
         }
@@ -5694,33 +6857,71 @@
      * 每颗按钮先在「未缩放」状态下量一次原生宽度，按它分到一个固定槽位；
      * 位置 = 槽位中心，缩放 = 改绘制尺寸。这样编辑器里把某一颗改小或隐藏，
      * 不会把它右边的按钮挤走 —— 「一颗一颗单独调」才成立。
+     *
+     * `maxRight`（可选）：这一行**允许到达的最右 x**。给了它就会在必要时
+     * 给整行乘一个统一的收缩系数 `fitScale`，保证行尾不会越出画面。
+     * 收口的原因见下面那段注释 —— 少了它，窄屏上行尾那颗按钮会被推出屏幕。
      */
-    layoutPillRow(btns, x0, by, bh, gapX) {
+    layoutPillRow(btns, x0, by, bh, gapX, maxRight) {
       var self = this;
       (btns || []).forEach(function (b) {
         if (!b || !b.gfx) return;
         b.baseH = bh;
         b._baseFont = Math.round(clamp(bh * 0.42, 11, 16));
         // 量原生宽度：临时把缩放 / 透明当作默认，免得量到缩放后的值
-        var ku = b.userScale, ka = b.userAlpha;
-        b.userScale = 1; b.userAlpha = 1; b.h = bh; b.w = 24;
+        var ku = b.userScale, ka = b.userAlpha, kf = b.fitScale;
+        b.userScale = 1; b.userAlpha = 1; b.fitScale = 1; b.h = bh; b.w = 24;
         self.paintButton(b);
         b.baseW = Math.max(24, b.w);
-        b.userScale = ku; b.userAlpha = ka;
+        b.userScale = ku; b.userAlpha = ka; b.fitScale = kf;
       });
-      var bx = x0;
-      (btns || []).forEach(function (b) {
-        if (!b || !b.gfx) return;
-        b.slotCenter = bx + b.baseW / 2;
-        bx += b.baseW + gapX;
-      });
-      (btns || []).forEach(function (b) {
-        if (!b || !b.gfx) return;
+
+      // ------------------------------------------------------------
+      // 溢出收口（第 2 条：窄屏上「最后那颗按钮不见了」）
+      // ------------------------------------------------------------
+      // 按钮的字号 / 高度都有绝对下限（字号 11px、高 24px），于是这一行有一个
+      // **最小可能宽度**（4 颗约 320px）。窗口比它窄时，旧代码照样按原生宽度
+      // 从左往右排 —— 行尾那颗被整个推到屏幕右侧之外：玩家看不见它，
+      // 连布局编辑器的框也在屏幕外，点不到（表现为「按钮不见了 / 点不到」）。
+      // 这里改成整体等比收缩：宁可小一圈，也保证整行落在画面里。
+      var fit = 1;
+      var list = (btns || []).filter(function (b) { return b && b.gfx; });
+      if (maxRight && list.length > 0) {
+        var total = 0;
+        list.forEach(function (b) { total += b.baseW; });
+        total += gapX * (list.length - 1);
+        var avail = maxRight - x0;
+        if (total > avail && total > 0) fit = clamp(avail / total, 0.5, 1);
+      }
+
+      // 按**取整后的实际宽度**排槽位：先前的写法用未取整的 baseW×fit 算槽位，
+      // 而真正绘制时每颗都会 round 一次 —— 每颗最多多出 1px，4~5 颗累积下来
+      // 整行就比预算长出几个像素，最后那颗还是会探出边界。
+      function assign(f) {
+        var bx = x0;
+        list.forEach(function (b) {
+          // 向下取整而不是四舍五入：floor 保证每颗都**不超过**预算宽度，
+          // 于是整行永远不会比算出来的总宽更长（round 会每颗多出最多 1px，
+          // 4~5 颗累积下来最右边那颗照样探出边界）。
+          var w = Math.max(16, Math.floor(b.baseW * f));
+          b.slotCenter = bx + w / 2;
+          bx += w + gapX;
+        });
+        return bx - gapX;
+      }
+      var end = assign(fit);
+      if (maxRight && end > maxRight && end > x0) {
+        // 还超：用**实测行尾**再反算一档，把取整误差一起吃掉
+        fit = clamp(fit * (maxRight - x0) / (end - x0), 0.5, 1);
+        end = assign(fit);
+      }
+      list.forEach(function (b) { b.fitScale = fit; });
+      list.forEach(function (b) {
         b.y = by;
         self.applyButtonStyle(b, b.userScale || 1,
           b.userAlpha == null ? 1 : b.userAlpha, b._hidden);
       });
-      return bx - gapX;   // 行尾 x
+      return end;   // 行尾 x
     }
 
     /**
@@ -5735,11 +6936,17 @@
       if (!b || !b.gfx) return;
       s = (s > 0) ? s : 1;
       a = (a == null) ? 1 : a;
+      // 实际绘制尺寸 = 编辑器设的缩放 × 本行现算的收口系数。
+      // 两者必须分开存：收口系数每次布局都会变，混进 userScale 就会一乘再乘。
+      var fit = (b.fitScale > 0) ? b.fitScale : 1;
       b.userScale = s;
       b.userAlpha = a;
       b._hidden = !!hide;
-      b.h = Math.max(12, Math.round((b.baseH || b.h) * s));
-      b.w = Math.max(16, Math.round((b.baseW || b.w) * s));
+      b.h = Math.max(12, Math.round((b.baseH || b.h) * s * fit));
+      // 宽度与 layoutPillRow 的 assign() 同一口径（floor）——
+      // 两边一个 round 一个 floor 的话，槽位与实际绘制宽度会差 1px，
+      // 累积到行尾就又把最后一颗挤出边界。
+      b.w = Math.max(16, Math.floor((b.baseW || b.w) * s * fit));
       if (b.slotCenter != null) b.x = Math.round(b.slotCenter - b.w / 2);
       b.gfx.setVisible(!hide).setAlpha(a);
       if (b.icon) b.icon.setVisible(!hide);
@@ -5791,7 +6998,10 @@
       // 常驻胶囊被编辑器缩放过：字号 / 内边距 / 图标都得跟着缩放走，
       // 否则缩小后文字与图标是固定像素、会把按钮撑成又矮又宽的一条。
       // us === 1 时下面每个值都与原来自动定宽的结果完全一致。
-      var us = (b.userScale > 0) ? b.userScale : 1;
+      // ⚠️ 必须**连 fitScale 一起**算进去（窄屏的整行收口系数，见 layoutPillRow）：
+      //    只缩底板不缩内容的话，下面 `if (b.w < need)` 会把 b.w 按原字号撑回去，
+      //    收口等于没做 —— 行尾那颗照样越界。
+      var us = ((b.userScale > 0) ? b.userScale : 1) * ((b.fitScale > 0) ? b.fitScale : 1);
       if (b.shape === 'pill' && b._baseFont) {
         var fs = Math.max(8, Math.round(b._baseFont * us));
         if (parseInt(b.text.style.fontSize, 10) !== fs) b.text.setFontSize(fs);
@@ -5834,7 +7044,12 @@
       }
 
       var need = Math.round(b.text.width + padX * 2 + icoW + gap);
-      if (b.w < need && b.shape === 'pill') b.w = need;
+      // ⚠️ 被整行收口（fitScale < 1）时**不能**再自动加宽：那等于把收口原地撤销，
+      //    行尾又会探出边界（实测每颗会悄悄长回 1~2px，4 颗就是 5px 以上）。
+      //    此时宽度以布局给的为准 —— 字号已经按 us（含 fitScale）缩过，
+      //    文字实际宽度与底板宽度本就该在同一条线上。
+      var fitS = (b.fitScale > 0) ? b.fitScale : 1;
+      if (b.w < need && b.shape === 'pill' && fitS >= 1) b.w = need;
       var w = b.w;
       var content = icoW + gap + b.text.width;
       var cx = x + Math.max(padX, Math.round((w - content) / 2));
@@ -5901,8 +7116,14 @@
       if (this.confirmOpen) return this.hitBtnList(p, pb.confirm);
       // 常驻功能按钮在面板打开时已被收起，命中也要跳过（与 handleUiClick 一致）
       if (!this.panelOverlayOpen()) {
+        // 遗物条与常驻按钮同一优先级判定（顺序与 handleUiClick 一致）
+        if (this.relicHitTest(p)) return { relicStrip: true };
         var hb = this.hitBtnList(p, this.hudButtons);
         if (hb) return hb;
+      }
+      if (this.relicOpen) {
+        if (this.relicView === 'stats') return this.hitBtnList(p, pb.relicStats);
+        return this.hitBtnList(p, pb.relic);
       }
       if (this.shopOpen) return this.hitBtnList(p, pb.shop) || this.hitBtnList(p, this.shopItemRects);
       if (this.codexOpen) return this.hitBtnList(p, pb.codex) || this.hitCodexRow(p);
@@ -5929,10 +7150,43 @@
         this._hoverRow = null;
       }
       var b = this.uiHitTest(p) || null;
+      if (!b || b.relicStrip) {
+        // 遗物条不是胶囊按钮（没有 gfx 可复用），悬停单独维护：
+        // 17px 的图标在鼠标下必须给出可见反馈，否则玩家根本不知道它可点。
+        this._hoverRelic(p);
+      }
       if (b === this._hoverBtn) return;
       if (this._hoverBtn) this.setButtonState(this._hoverBtn, 'normal');
       this._hoverBtn = (b && b.gfx && b.gfx.scene) ? b : null;
       if (this._hoverBtn) this.setButtonState(this._hoverBtn, 'hover');
+    }
+
+    /** 遗物详情的悬停：图标放大 1.18 + 提亮；`+N` 那一格只提亮文字 */
+    _hoverRelic(p) {
+      var hit = this.relicStripWanted ? this.relicHitTest(p) : null;
+      var idx = hit ? hit.i : -2;          // -1 = 尾部（+N / ▸属性）那一格
+      if (idx === this._hoverRelicIdx) return;
+      var prev = this._hoverRelicIdx;
+      this._hoverRelicIdx = idx;
+      var reset = (function (self) {
+        return function (i) {
+          if (i >= 0 && self.relicStripIcons && self.relicStripIcons[i]) {
+            var im = self.relicStripIcons[i];
+            var d = self._relicIconD || 17;
+            im.setDisplaySize(d, d);
+            im.setTint(0xffffff);
+            im.setAlpha(1);
+          }
+        };
+      })(this);
+      reset(prev);
+      if (idx >= 0 && this.relicStripIcons && this.relicStripIcons[idx]) {
+        var img = this.relicStripIcons[idx];
+        var d2 = this._relicIconD || 17;
+        img.setDisplaySize(d2 * 1.18, d2 * 1.18);
+        img.setTint(0xffffff);          // 保持原色，只靠尺寸表达（色环是信息，不能改色）
+        img.setAlpha(1);
+      }
     }
 
     /** 按压反馈：按下时轻微下沉，松手回到常态 */
@@ -6041,7 +7295,14 @@
       this._builtH = H;
       // 房间长度：Boss 房间更宽阔；宝箱 / 祭坛房间「拿完就走」，只留一屏出头
       // （原来的 Math.max(W*2, base) 会把缩短量整个吃掉 —— 这也是之前宝箱房跑半天的原因）
-      var base = 1400 + this.floor * 140;
+      //
+      // ⚠️ 封顶（用户反馈："后期房间长的根本跑不完，跑好几分钟才能打一两只怪"）
+      // ------------------------------------------------------------
+      // 原式 `base = 1400 + floor * 140` **没有上限**：层 50 = 8400px、层 100 = 15400px，
+      // 而普通房敌人数在层 10 就封顶到 7 只 → 密度从每 200px 一只崩到每 1000px 以上一只，
+      // 房间里大半是空走廊。**难度应该由敌人强度与数量承担，不该由"多跑两屏"承担。**
+      // 现在改为随层数温和增长（每层 +90）并在 2200 封顶。
+      var base = Math.min(1400 + this.floor * 90, 2200);
       var nonCombat = nonCombatRoom(node.type);
       if (node.type === 'boss') base += 380;
       if (nonCombat) base = Math.round(W * 0.95) + 260;
@@ -6422,13 +7683,24 @@
         n = clamp(1 + Math.floor(floor / 3), 1, 3);
         for (i = 0; i < n; i++) list.push(pool[ri(0, pool.length - 1)]);
       } else {
-        n = clamp(2 + Math.floor(floor / 2) + ri(0, 2), 2, 7);
+        // 敌人数：原式 `clamp(2 + floor/2 + ri(0,2), 2, 7)` 在**层 10 就封顶 7 只**，
+        // 而房间长度那时还在随层数上涨 → 后期房间越宽、里面反而越空。
+        //
+        // 现在数量同时受两条约束、取较大者（上限 want 也按房间长度给）：
+        //   · byFloor —— 层数强度（原有成长曲线，前期手感不变）
+        //   · bySize  —— 把房间铺满所需（每 ~700px 一只）
+        // 加了 bySize 是必须的：桌面房间长度有 `W×2` 这个下限（1920 屏 → 3840px），
+        // 只按层数给 2~4 只的话，把敌人摊开反而比原来"挤在第二屏"更空 ——
+        // 首怪是近了，但打完第一只要跑 900px 才见下一只。
+        var want = clamp(Math.round(this.levelWidth / 240), 4, 9);
+        var byFloor = 2 + Math.floor(floor / 2);
+        var bySize = Math.round(this.levelWidth / 700);
+        n = clamp(Math.max(byFloor, bySize) + ri(0, 2), 2, want);
         for (i = 0; i < n; i++) list.push(pool[ri(0, pool.length - 1)]);
         if (floor >= 2 && Math.random() < 0.35) list.push(Math.random() < 0.5 ? 'guard' : 'necro');
       }
 
       var self = this;
-      var baseX = this.scale.width + 140;
 
       // 出生点必须在**所有平台之上**。
       // 地面敌人原来固定用 groundY - 80，而这个高度正好落在平台的碰撞层里：敌人一出生
@@ -6441,15 +7713,21 @@
       // 水平铺开：原来 x 是「上一只 + 150~260」累加出来的，idx 越大越容易越过关卡右端，
       // 一旦越过就被塞回同一段区间 —— 几只敌人会叠在同一个点上，看起来像一个怪，
       // 实际是两个，打死一个还有一个。
-      var spanStart = self.scale.width + 60;
-      var spanEnd = Math.max(spanStart + 40, self.levelWidth - 100);
+      //
+      // ⚠️ 出生区间前移（用户反馈："跑好几分钟才能打一两只怪"）
+      // ------------------------------------------------------------
+      // 原来 `spanStart = 屏宽 + 60`、且第 0 只固定钉在 `屏宽 + 140` ——
+      // 意味着**进房后的整块第一屏永远没有敌人**，每次都得先白跑一屏才见到第一只怪；
+      // 房间被拉长到 2200 后这段空跑更长。改成从屏幕中段（0.45W）起铺：
+      // 玩家从 x=140 出发，几步之内就接触，进房即有仗打。
+      var spanStart = Math.round(self.scale.width * 0.45);
+      var spanEnd = Math.max(spanStart + 40, self.levelWidth - 120);
       var step = (spanEnd - spanStart) / Math.max(1, list.length);
 
       list.forEach(function (key, idx) {
         var def = ENEMY_TYPES[key];
         if (!def) return;
-        var x = idx === 0 ? baseX
-          : (spanStart + step * (idx + 0.5) + rnd(-step * 0.25, step * 0.25));
+        var x = spanStart + step * (idx + 0.5) + rnd(-step * 0.22, step * 0.22);
         x = clamp(x, spanStart, spanEnd);
         // 飞行怪的高度随便放都行（它们不与地形碰撞，见 spawnEnemy），
         // 地面怪则从平台上方落下
@@ -6805,6 +8083,9 @@
     /**
      * 敌人属性：优先问宿主（经典公式），宿主没接就退回引擎内置曲线
      * 内置曲线保留原样：hp = def.hp×(1+0.2(f−1))、atk = def.atk×(1+0.15(f−1))
+     *
+     * 宿主还可以顺带回一个可选的 `ai` 倍率包（移速 / 前摇 / 后摇 / 索敌），
+     * 用来做「不只是更肉更痛，而是更主动」的那一层加强 —— 见 boostEnemyDef。
      */
     enemyStats(def, floor, key) {
       if (HOST.enemyScaler) {
@@ -6817,7 +8098,8 @@
           if (r && r.hp > 0) {
             return {
               hp: Math.round(r.hp),
-              atk: Math.max(1, Math.round(r.atk > 0 ? r.atk : def.atk))
+              atk: Math.max(1, Math.round(r.atk > 0 ? r.atk : def.atk)),
+              ai: r.ai || null
             };
           }
         } catch (e) {
@@ -6827,8 +8109,32 @@
       var scale = 1 + (floor - 1) * 0.2;
       return {
         hp: Math.round(def.hp * scale),
-        atk: Math.round(def.atk * (1 + (floor - 1) * 0.15))
+        atk: Math.round(def.atk * (1 + (floor - 1) * 0.15)),
+        ai: null
       };
+    }
+
+    /**
+     * 把 AI 缩放应用到 def 的**副本**上
+     * ------------------------------------------------------------
+     * 敌人的移速 / 前摇 / 后摇 / 索敌范围在 AI 状态机里是被 `def.xxx` 直接读的
+     * （十几处），所以不去改那些读取点，而是**换掉 def 本身** —— `e.def` 跟着换，
+     * 后面所有读取自然生效。和 mimicDef 是同一个套路。
+     *
+     * ⚠️ 前摇有下限（200ms）：完美闪避的窗口是固定的 150ms，玩家要"看到起手 →
+     *    在命中瞬间闪"；前摇一旦压到窗口附近，这一击就变成没法反应的抽奖，
+     *    那不是变强、是变坏。后摇下限 140ms 同理（留出反击的缝）。
+     */
+    boostEnemyDef(def, ai) {
+      if (!ai) return def;
+      var out = {};
+      for (var k in def) out[k] = def[k];
+      if (ai.speed) out.speed = Math.max(12, Math.round(def.speed * ai.speed));
+      if (ai.windup) out.windup = Math.max(200, Math.round(def.windup * ai.windup));
+      if (ai.recover) out.recover = Math.max(140, Math.round(def.recover * ai.recover));
+      if (ai.detect) out.detect = Math.round(def.detect * ai.detect);
+      if (ai.attackRange) out.attackRange = Math.round(def.attackRange * ai.attackRange);
+      return out;
     }
 
     spawnEnemy(key, x, y, floor) {
@@ -6865,6 +8171,10 @@
       if (def.tint) spr.setTint(def.tint);
 
       var stats = this.enemyStats(def, floor, key);
+      // 敌人强化（AI 层）：宿主给了 ai 倍率包就换一份 def 副本 ——
+      // e.def 之后读到的就是缩放后的移速 / 前摇 / 后摇 / 索敌。
+      // 必须在 e = {...} 之前换，因为 e.def 存的就是这个引用。
+      if (stats.ai) def = this.boostEnemyDef(def, stats.ai);
       var hp = stats.hp;
 
       var e = {
@@ -6953,6 +8263,7 @@
       this.attackReadyAt = now + (chain ? Math.max(240, 380 - 60) : 380) / rate;
       this.attacking = true;
       this.attackHits = {};
+      this._swingLinkDone = false;   // 连携：新的这一挥可以再烧一点（见 rollPlayerDamage 的守卫）
       this.hero.play('hero_attack', true);
 
       var dir = this.hero.flipX ? -1 : 1;
@@ -6987,6 +8298,8 @@
       this.diving = true;
       this.diveHits = {};
       this.attacking = true;
+      this._swingLinkDone = false;   // 连携：新的这一次跳劈可以再烧一点
+      this._diveLinked = false;      // 跳劈是否带连携（落地冲击波范围据此放大）
       this.attackReadyAt = now + 240;
       this.diveReadyAt = now + 240;
       this.isCharging = false;
@@ -7025,7 +8338,7 @@
         if (Phaser.Geom.Intersects.RectangleToRectangle(rect, e.sprite.getBounds())) {
           self.diveHits[idx] = true;
           self.showFloat(e.sprite.x, e.sprite.y - 92, '下落斩', '#ff9a5a', 16);
-          self.damageEnemy(e, self.rollPlayerDamage(DIVE.mult), false);
+          self.damageEnemy(e, self.rollPlayerDamage(DIVE.mult, false, null, { move: 'dive' }), false);
           // 砸进地里：刻意保留的特性（见 DIVE 里的说明）。
           // 排在伤害之后 —— 已经被打死的敌人不该再演一遍「陷进地里」。
           if (e.alive && self.buryEnemy(e)) {
@@ -7054,10 +8367,14 @@
       // 脚下地裂
       this.groundCrack(h.x, h.y + 2, 460);
 
+      // 带连携的跳劈：冲击波一并放大 —— 让"用它清一群"和"留着打单体盾反"
+      // 变成两个真的不一样的选择（倍率上的差别见 rollPlayerDamage）
+      var splashR = DIVE.splashRadius * (this._diveLinked ? LINK.splash : 1);
+
       var ring = this.add.circle(h.x, h.y - 6, 18, 0xffd76a, 0.22).setDepth(11);
       ring.setStrokeStyle(3, 0xffd76a, 0.9);
       this.tweens.add({
-        targets: ring, radius: DIVE.splashRadius, alpha: 0, duration: 300,
+        targets: ring, radius: splashR, alpha: 0, duration: 300,
         onComplete: function () { ring.destroy(); }
       });
       this.spark(h.x, h.y - 4, 0xffd76a);
@@ -7065,14 +8382,15 @@
       if (state.settings.screenShake2D !== false) this.cameras.main.shake(210, 0.013);
 
       // 冲击波：范围内尚未被下落斩命中的敌人补一次范围伤害
-      var radius = DIVE.splashRadius;
+      var radius = splashR;
       this.enemies.forEach(function (e, idx) {
         if (!e.alive || self.diveHits[idx]) return;
         if (Math.abs(e.sprite.x - h.x) <= radius && Math.abs(e.sprite.y - h.y) <= radius * 0.9) {
-          self.damageEnemy(e, self.rollPlayerDamage(DIVE.splashMult), false);
+          self.damageEnemy(e, self.rollPlayerDamage(DIVE.splashMult, false, null, { noLink: true }), false);
         }
       });
       this.showFloat(h.x, h.y - 72, '冲击波', '#ffd76a', 15);
+      this._diveLinked = false;   // 这一次跳劈的连携结算完了，别带给下一次
       // 落地后的短暂窗口内接攻击 = 落地斩（连招）
       this.diveCounterUntil = this.time.now + CHAIN.diveWindow;
     }
@@ -7190,6 +8508,7 @@
       this.attackReadyAt = now + cfg.cd / (this.furyActive() ? FURY.atkSpeed : 1);
       this.attacking = true;
       this.attackHits = {};
+      this._swingLinkDone = false;   // 连携：新的一次射击可以再烧一点
 
       // 位移：近战连招是「自己冲上去」（lunge）；远程连招都不带位移 ——
       // 弓与法杖的收益在弹丸上，不在身位上（连珠箭是原地连射，见 RANGED_CHAIN.roll）
@@ -7495,7 +8814,13 @@
       sfx('splash');
     }
 
-    rollPlayerDamage(mult, forceCrit, chainName) {
+    /**
+     * 玩家伤害结算的唯一出口（普攻 / 连招 / 跳劈 / 技能都走这里）
+     * @param {object} [opts] noLink: true = 这一下不吃连携（技能每段、跳劈溅射这类
+     *                        "同一次挥击的附属段"，否则一次跳劈会连吃两点）
+     *                        move: 招式类型（'dive' = 跳劈），给连携加招式专属效果
+     */
+    rollPlayerDamage(mult, forceCrit, chainName, opts) {
       var now = this.time.now;
       var sharp = now < this.perfectUntil;              // 完美闪避强化：锐利
       var power = now < (this.skillPowerUntil || 0) ? (this.skillPowerMult || 1) : 1;   // 英雄技能强化
@@ -7512,19 +8837,118 @@
       }
       // 遗物：造成伤害的系数（表见 RELIC_FX）
       var relicDmg = 1 + this.relicFx('dmgMult', 0);
+      // 破釜沉舟（血怒流核心）：伤害随**已损失的生命比例**连续上升。
+      // 原来是"半血以下 +25%"的开关 —— 开关只让玩家"等到半血"，
+      // 而曲线让玩家主动去够：再挨一下就能多打 7%，这个"要不要冒险"才是流派的玩法。
+      var perMiss = this.relicFx('dmgPerMissingHp', 0);
+      if (perMiss > 0 && this.hero.maxHp > 0) {
+        var missRatio = Math.max(0, 1 - this.hero.hp / this.hero.maxHp);
+        if (missRatio > 0) relicDmg *= 1 + Math.min(0.80, missRatio * perMiss * 10);
+      }
       if (this.hasPerk('berserkLowHp') && this.hero.hp <= this.hero.maxHp * 0.5) {
         relicDmg *= 1 + this.relicFx('dmgLowHp', 0.25);
       }
       if (relicDmg !== 1) base *= relicDmg;
+
+      // 连携：把点数烧在这一击上。
+      // 这是整套系统**唯一**的消费点 —— 于是"这点数是留给盾反，还是现在就砍掉"
+      // 这个决定，完全由玩家自己的出招时机做出来，不需要额外的按键。
+      var linked = false;
+      // _swingLinkDone 守卫：一次挥击只烧一点。
+      // 近战 / 跳劈的命中都是"遍历敌人逐个结算"，没这个守卫的话
+      // 一刀扫中 3 只怪就会把 3 点连携一口气吃光。
+      if (!(opts && opts.noLink) && !this._swingLinkDone && this.link > 0 && this.running && !this.heroDead) {
+        this._swingLinkDone = true;
+        this.link--;
+        linked = true;
+        // 重击：跳劈吃连携时倍率再抬一截 —— 给"跳劈流"一个专属的连携用法
+        var lkMult = LINK.dmgMult +
+          ((opts && opts.move === 'dive') ? this.relicFx('diveLinkMult', 0) : 0);
+        base *= lkMult;
+        // 跳劈的连携不只加伤害，连落地冲击波一起放大 ——
+        // 让"用它清一群"和"留着打单体盾反"变成两个真的不同的选择
+        if (opts && opts.move === 'dive') this._diveLinked = true;
+        this.showFloat(this.hero.x + rnd(-14, 14), this.hero.y - 118, '回响!', '#8ae8ff', 17);
+        this.spark(this.hero.x, this.hero.y - 30, 0x8ae8ff);
+        sfx('perfect');
+        this.paintLinkMeter();
+      }
+
       var crit = sharp || forceCrit || pass.forceCrit ||
         Math.random() < (this.hero.critRate / 100 + critEnv.rate);
       if (crit) base *= (this.hero.critDamage / 100) * critEnv.dmg;
-      return { dmg: Math.max(1, Math.round(base)), crit: crit, chain: chainName || null };
+      return { dmg: Math.max(1, Math.round(base)), crit: crit, chain: chainName || null, link: linked };
+    }
+
+    /**
+     * 铁壁兵：这一下是不是砸在它的盾面上？
+     * 用"敌人朝向 + 玩家站位"判定，并且**从上方来的攻击不算正面** ——
+     * 跳劈正是设计好的解法，不能让盾把它也一并挡了（否则这只怪只剩"绕后"一条路）。
+     */
+    isFrontalHit(e) {
+      var spr = e.sprite, h = this.hero;
+      if (!spr || !h) return false;
+      // ⚠️ 朝向必须读 e.faceDir，**不能读 sprite.flipX**：
+      //    flipX 在受击硬直（spr.setFlipX(velocity.x < 0)）与冲锋期间会被**速度方向**覆写，
+      //    挨了一下被打飞之后，它的"盾面"就跟着飞的方向翻过去了 —— 判定会整个错乱。
+      //    faceDir 由 AI 单独维护，并带转身延迟（见 SHIELD_TURN）。
+      var facing = e.faceDir || (spr.flipX ? -1 : 1);
+      var playerSide = (h.x >= spr.x) ? 1 : -1;    // 玩家在它的哪一边
+      if (facing !== playerSide) return false;     // 背后 → 不算正面
+      if (h.y < spr.y - 34) return false;          // 明显高于它 = 跳劈 / 空中攻击，从上方压下来
+      return true;
+    }
+
+    /** 敌人身上的护盾环（献祭者给的）—— 没有这个环，玩家看不出"该先打谁" */
+    refreshEnemyShieldRing(e) {
+      if (!e || !e.sprite || !e.sprite.active) return;
+      if (e.shield > 0) {
+        if (!e.shieldRing) {
+          e.shieldRing = this.add.circle(0, 0, 24, 0x5fd0e0, 0.14).setDepth(10);
+          e.shieldRing.setStrokeStyle(2, 0x5fd0e0, 0.75);
+        }
+        e.shieldRing.setVisible(true);
+        e.shieldRing.setPosition(e.sprite.x, e.sprite.y - 26);
+      } else if (e.shieldRing) {
+        e.shieldRing.setVisible(false);
+      }
     }
 
     damageEnemy(e, roll, fromThorn) {
       if (!e.alive) return;
       var dmg = roll.dmg;
+
+      // ===== 机制型敌人（B 项）=====
+      // ① 铁壁兵：正面免疫 —— 站桩平砍打不动它，必须跳劈（从上方）或绕到背后。
+      //    它针对的是"无脑按 J"这条最省事的路径，所以反馈必须**立刻且明确**：
+      //    飘「盾牌格挡」+ 金属音 + 把玩家推开，而不是默默把伤害吞掉。
+      if (e.def.shieldFront && !fromThorn && this.isFrontalHit(e)) {
+        this.showFloat(e.sprite.x, e.sprite.y - 76, '盾牌格挡', '#9fd8ff', 17);
+        this.spark(e.sprite.x, e.sprite.y - 32, 0x9fd8ff);
+        if (!e._blockSfxAt || this.time.now - e._blockSfxAt > 300) {
+          e._blockSfxAt = this.time.now;
+          sfx('parry');
+        }
+        // 反弹：给玩家一点后退力，让"这条路走不通"变成身体能感觉到的反馈
+        var kb = (this.hero.x >= e.sprite.x) ? 1 : -1;
+        this.hero.setVelocityX(kb * 220);
+        this.showFloat(this.hero.x, this.hero.y - 104, '绕后或用跳劈', '#8a9aa8', 13);
+        return;
+      }
+
+      // ② 献祭者给的护盾：优先吸收（与玩家护盾同一套语义，读起来不用重新学）
+      if (e.shield > 0) {
+        var abs = Math.min(e.shield, dmg);
+        e.shield -= abs;
+        dmg -= abs;
+        this.showFloat(e.sprite.x, e.sprite.y - 92, '护盾 -' + Math.round(abs), '#5fd0e0', 14);
+        this.spark(e.sprite.x, e.sprite.y - 30, 0x5fd0e0);
+        this.refreshEnemyShieldRing(e);
+        if (dmg <= 0) {
+          e.hurtUntil = Math.max(e.hurtUntil || 0, this.time.now + 80);
+          return;   // 这一下全被护盾吃掉
+        }
+      }
 
       // 环境：闪避领域（敌人有几率闪开，只有直接命中会闪，反伤/环境伤害不闪）
       if (!fromThorn && this.envEnemyDodge() > 0 && Math.random() < this.envEnemyDodge()) {
@@ -7545,6 +8969,10 @@
         dmg = Math.max(dmg, Math.ceil(e.hp));
         this.showFloat(e.sprite.x, e.sprite.y - 74, '斩杀!', '#ff5555', 24);
         sfx('execute');
+        // 处决者：斩杀成功回连携 —— 把"收割残血"接进连携循环，
+        // 于是"先攒点、再收割"成为一条能自己滚起来的打法
+        var exLink = Math.round(this.relicFx('executeLink', 0));
+        if (exLink > 0) this.addLink(exLink);
       }
 
       this._roomFirstHit = true;   // 被动：首击类技能（刺客 / 暗影）只在本房间的第一次命中生效
@@ -7568,6 +8996,9 @@
       if (roll.crit && state.settings.screenShake2D !== false) this.cameras.main.shake(90, 0.006);
 
       var vampLv = this.hero.vampire + this.relicFx('vampireExtra', 0);   // 遗物：血之饥渴
+      // 血之饥渴：生命 ≤50% 时吸血翻倍 —— 与破釜沉舟同向，凑成"越残越能打"的一整套
+      if (vampLv > 0 && this.relicFx('vampLowHpMult', 0) > 0 &&
+          this.hero.hp <= this.hero.maxHp * 0.5) vampLv *= 2;
       if (vampLv > 0) {
         this.healHero(Math.max(1, Math.round(dmg * Math.min(0.5, vampLv * 0.05))), false);
         sfx('vampire');
@@ -7620,6 +9051,7 @@
       if (e.meter) this.destroyMeter(e.meter);
       if (e.nameLbl) e.nameLbl.destroy();
       if (e.atkLbl) e.atkLbl.destroy();
+      if (e.shieldRing) { e.shieldRing.destroy(); e.shieldRing = null; }   // 献祭者的护盾环
       if (this.boss === e) {
         this.boss = null;
         this.setMeterVisible(this.bossMeter, false);
@@ -7652,6 +9084,7 @@
       this.setMeterVisible(e.meter, false);
       if (e.nameLbl) e.nameLbl.setVisible(false);
       if (e.atkLbl) e.atkLbl.setVisible(false);
+      if (e.shieldRing) { e.shieldRing.destroy(); e.shieldRing = null; }   // 献祭者的护盾环
 
       var gain = e.tier === 'boss' ? 12 : (e.tier === 'elite' ? 5 : 2);
       gain = Math.max(1, Math.round(gain * (1 + this.relicFx('goldGain', 0))));   // 遗物：金币获取
@@ -7671,6 +9104,9 @@
       this.addFury(FURY.gainKill);
       // 遗物：击杀回复（汲魂者一类）
       var healKill = this.relicFx('healKill', 0);
+      // 汲魂者：残血时回得更多 —— 低血不再只是等死，而是"再杀一个就能撑住"
+      if (healKill > 0 && this.relicFx('healKillLowHp', 0) > 0 &&
+          this.hero.hp <= this.hero.maxHp * 0.5) healKill += this.relicFx('healKillLowHp', 0);
       if (healKill > 0 && !this.heroDead) this.healHero(healKill, true);
 
       if (this.boss === e) {
@@ -7755,10 +9191,12 @@
       this.blockCount = (this.blockCount || 0) + 1;
       this.counterUntil = now + GUARD.counter;
       this.addFury(FURY.gainPerfect);          // 完美格挡攒怒（技巧奖励）
+      this.addLink(1);                         // 完美格挡攒连携（技巧 → 可消费的资源）
       this.guarding = true;                    // 格挡后保持举盾，等玩家决定是否盾反
       this.guardStartAt = now - GUARD.perfect; // 窗口已过：继续举着只减伤，不再连出完美
       this.showFloat(h.x, h.y - 96, '完美格挡!', '#ffd76a', 22);
-      this.addShield(GUARD.shieldGain, null);
+      // 护盾共鸣：完美格挡额外给盾（与"任何来源 +2"分开算，见 RELIC_FX 的说明）
+      this.addShield(GUARD.shieldGain + Math.round(this.relicFx('perfectShield', 0)), null);
       if (this.skillId === 'guardian') this.addShield(GUARD.guardianBonus, '坚壁防御');
       sfx('parry');
       this.cameras.main.flash(80, 255, 240, 200);
@@ -7873,7 +9311,7 @@
         if (!e.alive || (self.attackHits && self.attackHits[idx])) return;
         if (Math.abs(e.sprite.x - h.x) > radius || Math.abs(e.sprite.y - h.y) > radius * 0.9) return;
         if (self.attackHits) self.attackHits[idx] = true;
-        self.damageEnemy(e, self.rollPlayerDamage(CHAIN.diveMult * CHAIN.diveSplash), false);
+        self.damageEnemy(e, self.rollPlayerDamage(CHAIN.diveMult * CHAIN.diveSplash, false, null, { noLink: true }), false);
       });
     }
 
@@ -8226,17 +9664,19 @@
     }
 
     // ---------- 狂怒（实时重做）----------
-    /** 攒怒：clamp 到上限，满了就开自动触发倒计时 */
+    /** 攒怒：clamp 到上限；满了只提示一次，不自动爆发（见 tryFury） */
     addFury(n, tag) {
       if (!this.running || this.heroDead || n <= 0) return 0;
       if (this.furyActive()) return 0;                 // 狂怒期间不再攒（避免自己喂自己）
+      // 狂热之血：低血时攒得更快 —— 残血反打的手感支撑（血怒流的第三条腿）
+      var lowBoost = this.relicFx('furyLowHp', 0);
+      if (lowBoost > 0 && this.hero.hp <= this.hero.maxHp * 0.5) n *= 1 + lowBoost;
       var before = this.fury;
       this.fury = Math.min(FURY.max, this.fury + n);
       var gained = Math.round(this.fury - before);
       if (gained > 0) {
         if (this.fury >= FURY.max && !this._furyFull) {
           this._furyFull = true;
-          this.furyAutoAt = this.time.now + FURY.autoDelay;
           this.showFloat(this.hero.x, this.hero.y - 118, '狂怒已满 · 按 R 爆发', '#ffd76a', 16);
           sfx('levelUp');
         }
@@ -8244,6 +9684,41 @@
       }
       this.paintFuryMeter();
       return gained;
+    }
+
+    /* ---------- 连携（技巧资源；设计说明见文件上方的 LINK）----------
+       产出只有一条路（完美判定），消费只有一条路（主动攻击）。
+       中间那句"要不要现在就花掉"，就是这套系统想加进战斗的那个决定。 */
+    /** 攒连携：完美闪避 / 完美格挡各 +1，上限由遗物可抬 */
+    addLink(n) {
+      if (!this.running || this.heroDead) return 0;
+      var cap = Math.max(1, LINK.max);
+      var before = this.link || 0;
+      this.link = Math.min(cap, before + (n || 1));
+      var gained = this.link - before;
+      if (gained > 0) {
+        this.showFloat(this.hero.x, this.hero.y - 140, '连携 +' + gained, '#8ae8ff', 16);
+        this.paintLinkMeter();
+      }
+      return gained;
+    }
+
+    /** 挨打即断：这是"攒着不用"的代价，也是这套系统唯一的惩罚 */
+    breakLink() {
+      if (!this.link) return 0;
+      // 不屈意志：挨打只掉 1 点、不清零 —— 连携流的"安全带"。
+      // 它的意义是让"攒到 5 点再一口气放"这种打法真的敢去打。
+      if (this.hasPerk('unbroken')) {
+        this.link -= 1;
+        this.showFloat(this.hero.x, this.hero.y - 140, '连携 −1', '#ff9a5a', 15);
+        this.paintLinkMeter();
+        return 1;
+      }
+      var lost = this.link;
+      this.link = 0;
+      this.showFloat(this.hero.x, this.hero.y - 140, '连携中断 −' + lost, '#ff6b6b', 16);
+      this.paintLinkMeter();
+      return lost;
     }
 
     furyActive() { return this.furyUntil > this.time.now; }
@@ -8260,18 +9735,17 @@
         sfx('error');
         return false;
       }
-      this.enterFury(true);
+      this.enterFury();
       return true;
     }
 
-    /** 进入狂怒状态：清空狂怒值，换来 6 秒全面强化 */
-    enterFury(manual) {
+    /** 进入狂怒状态：清空狂怒值，换来 6 秒全面强化（唯一的入口是 tryFury —— 手动） */
+    enterFury() {
       var now = this.time.now, h = this.hero;
       this.fury = 0;
       this._furyFull = false;
-      this.furyAutoAt = 0;
       this.furyUntil = now + FURY.duration;
-      this.showCenter(manual ? '狂怒爆发！' : '狂怒自动爆发！', '#ffd76a');
+      this.showCenter('狂怒爆发！', '#ffd76a');
       this.showFloat(h.x, h.y - 96, '狂怒 · 攻速 +35% 伤害 +50%', '#ffd76a', 15);
       sfx('skill');
       sfx('battleStart');
@@ -8307,12 +9781,11 @@
         }
         if (this.furyRing && this.furyRing.visible) this.furyRing.setVisible(false);
       }
-      // 满怒但没按：到点自动进入（不浪费）
-      if (!on && this.fury >= FURY.max && this.furyAutoAt && now >= this.furyAutoAt) this.enterFury(false);
+      // 满怒不再自动进入（本版：去掉自动爆发，只保留手动按 R）
       this.paintFuryMeter();
     }
 
-    /** 狂怒条的实时重绘（条体 + 满怒呼吸 + 自动爆发倒计时） */
+    /** 狂怒条的实时重绘（条体 + 满怒呼吸） */
     paintFuryMeter() {
       if (!this.furyMeter) return;
       var now = this.time.now;
@@ -8348,6 +9821,62 @@
       }
       if (this.isTouch && this.btnFury) {
         this.btnFury.setFillStyle(full ? 0xffd76a : (on ? 0xffb347 : 0x6a5a30), full ? 0.5 : (on ? 0.4 : 0.18));
+      }
+    }
+
+    /* ============================================================
+       连携的可视化：主角头顶的菱形点，亮 = 已攒
+       ------------------------------------------------------------
+       为什么不做成 HUD 里的一根条：
+         · 它是**离散**的（0~N 点），条形会让人误以为能慢慢涨
+         · 更重要的是它必须"不用看角落" —— 连携会因挨打一次性清零，
+           玩家得在贴身缠斗的瞬间就看清还剩几点，才谈得上"这一刀值不值"
+       所以它挂在世界坐标里跟着主角走，也不登记进自定义布局（不干扰玩家布局）。
+       ============================================================ */
+    /** 重建连携点（数量随 LINK.max 变 —— 遗物抬上限时会走到这里） */
+    buildLinkPips(cap) {
+      if (this.linkPips) this.linkPips.forEach(function (p) { if (p) p.destroy(); });
+      var arr = [];
+      for (var i = 0; i < cap; i++) {
+        var g = this.add.graphics().setDepth(1200).setVisible(false);
+        g.fillStyle(0x8ae8ff, 1);
+        g.beginPath();
+        g.moveTo(0, -5); g.lineTo(5, 0); g.lineTo(0, 5); g.lineTo(-5, 0);
+        g.closePath(); g.fillPath();
+        arr.push(g);
+      }
+      this.linkPips = arr;
+    }
+
+    /** 头顶连携点：位置 + 明暗（每帧调用；0 点时整组隐藏，画面保持干净） */
+    paintLinkMeter() {
+      var cap = Math.max(1, LINK.max);
+      if (!this.linkPips || this.linkPips.length !== cap) this.buildLinkPips(cap);
+      var h = this.hero;
+      if (!h) return;
+      var n = this.link || 0;
+      var show = this.running && !this.heroDead && n > 0;
+      if (!show) {
+        this.linkPips.forEach(function (p) { if (p && p.visible) p.setVisible(false); });
+        return;
+      }
+      var gap = 13;
+      var x0 = h.x - (cap - 1) * gap / 2;
+      var y = h.y - 126;
+      // 最新攒到的那一点在呼吸：眼睛能立刻跟上"刚刚又攒了一个"
+      var pulse = 0.70 + 0.30 * Math.abs(Math.sin(this.time.now / 220));
+      for (var i = 0; i < cap; i++) {
+        var p = this.linkPips[i];
+        if (!p) continue;
+        if (i >= n) {
+          // 未攒的点不显示 —— 平时画面里只有"已经拿到的"，不留一排空槽占视线
+          if (p.visible) p.setVisible(false);
+          continue;
+        }
+        if (!p.visible) p.setVisible(true);
+        p.setPosition(x0 + i * gap, y);
+        p.setAlpha(i === n - 1 ? pulse : 1);
+        p.setScale(i === n - 1 ? 1.12 : 0.92);
       }
     }
 
@@ -8497,9 +10026,16 @@
       this.invulnUntil = now + (blockedFront ? 260 : 700);
       // 狂怒：挨打也攒怒（逆风翻盘的手感）
       if (remain > 0) this.addFury(FURY.gainHurt);
+      // 连携：真掉血就全断。
+      // 只认"实际掉血"（remain > 0）—— 被盾挡住 / 被护盾吃掉的那一下不断，
+      // 因为"用护盾换连携"本身就是一个玩家可以做的交换，断了反而少一个选择。
+      if (remain > 0) this.breakLink();
       if (state.settings.screenShake2D !== false) this.cameras.main.shake(140, 0.008);
 
       var thornVal = this.hero.thorn + this.relicFx('thornExtra', 0);   // 遗物：荆棘之心
+      // 荆棘之心：生命 ≤50% 时反伤翻倍 —— 血怒流"故意挨打"的那一环
+      if (this.relicFx('thornLowHpMult', 0) > 0 &&
+          this.hero.hp <= this.hero.maxHp * 0.5) thornVal *= 2;
       if (thornVal > 0 && source) this.damageEnemy(source, { dmg: thornVal, crit: false }, true);
       if (remain > 0) sfx('hurt');
 
@@ -8566,12 +10102,25 @@
      */
     statPanelMetrics(sizeW) {
       var W = sizeW || this.scale.width;
+      // 遗物条占着那一行时，属性面板整体下让 —— 两者不叠字。
+      var rowH = RELIC_ROW_H;
+      var top0 = this._relicStripVisible ? (RELIC_ROW_CY + rowH) : 106;
+      // 「精简」与「极简」档：属性面板整块收起（数值没有消失，搬进了遗物详情
+      // 卡片的「属性明细」页 —— 这也是手机横屏原来就有的行为，只是那时没有出口）。
+      var dens = this.hudDensity || 'auto';
+      if (dens === 'minimal' || dens === 'compact') {
+        return { perRow: 4, step: 84, font: 12, rows: 0, top: top0, rowH: 18, bottom: top0 - 6 };
+      }
       // 触摸设备 + 低高度横屏（手机横着拿）：这 8 个小格（攻/暴/闪/盾/棘/吸/连/斩）
       // 在整场战斗里一个数字都不会变，却是左侧 HUD 里最密的一块 —— 2 行 × 4 格。
       // 屏幕高度只有 ~360 时把它收起来：技能胶囊与功能按钮随之上移约 34px，
-      // 把画面多让出来一条。想核对数值随时切「文字界面」。
+      // 把画面多让出来一条。
+      // ⚠️ 原来这里写着"想核对数值随时切「文字界面」"—— 那个按钮在 v2.8 已随
+      //    试炼关停一起删除，手机玩家因此**完全没有途径**核对这 8 个数值。
+      //    现在这批数据搬进了属性明细页，入口是常驻按钮行里的「属性」胶囊
+      //    （id = stats，与图鉴 / 设置同款），收起才不再是死路。
       if (this.isTouch && this.scale.height < 460) {
-        return { perRow: 4, step: 84, font: 12, rows: 0, top: 106, rowH: 18, bottom: 100 };
+        return { perRow: 4, step: 84, font: 12, rows: 0, top: top0, rowH: 18, bottom: top0 - 6 };
       }
       var perRow = W >= 880 ? 8 : (W >= 560 ? 4 : 3);
       var count = (this.statItems && this.statItems.length) || 8;
@@ -8581,9 +10130,9 @@
         step: perRow === 8 ? 74 : 84,
         font: W >= 560 ? 12 : 11,
         rows: rows,
-        top: 106,
+        top: top0,
         rowH: 18,
-        bottom: 106 + (rows - 1) * 18 + 9   // 最后一行的下沿（含半个行高）
+        bottom: top0 + (rows - 1) * 18 + 9   // 最后一行的下沿（含半个行高）
       };
     }
 
@@ -8591,6 +10140,13 @@
     layoutStatPanel(sizeW) {
       if (!this.statItems || !this.statItems.length) return;
       var m = this.statPanelMetrics(sizeW);
+      // ⚠️ 必须缓存：refreshHud 每帧都会带动遗物条 → 遗物条又会调这里，
+      //    而每个 statItem 的 setFontSize / setVisible 都会让 Phaser **重新栅格化**
+      //    文字纹理（8 项 × 每帧）。不缓存就是每帧重建 8 张纹理，帧级掉血。
+      var W = sizeW || this.scale.width;
+      var sig = m.rows + '|' + m.top + '|' + m.perRow + '|' + m.font + '|' + W;
+      if (this._statLayoutSig === sig) { this.hudStatBottom = m.bottom; this.hudBtnY = m.bottom + 14; return; }
+      this._statLayoutSig = sig;
       var collapsed = m.rows === 0;
       this.statItems.forEach(function (it, i) {
         it.box.setVisible(!collapsed);
@@ -8607,6 +10163,631 @@
       // 属性面板 → 英雄技能 → 常驻按钮：三层依次往下排
       this.hudStatBottom = m.bottom;
       this.hudBtnY = m.bottom + 14;   // 兼容旧字段（常驻按钮行的基准）
+    }
+
+    // ============================================================
+    //  遗物条（v2.8.1）
+    // ------------------------------------------------------------
+    //  解决什么：2.7 把主画面换成 2D 之后，遗物在画面上只剩菜单里一个数字。
+    //  而 27 件遗物分四流派、同派互相放大 —— 看不见自己拿了什么、在凑哪一套，
+    //  构筑这件事就不成立。
+    //
+    //  为什么不加按钮：加一颗「遗物」按钮等于把画面上已经过多的按钮再 +1。
+    //  这里改成**把图标直接嵌进主角血条组**：它长在血条下面，读作「这个角色的
+    //  装备」，而不是一颗新的系统入口。玩家不需要学一个新按钮 ——
+    //  看到图标就点，这是所有游戏通用的直觉。
+    //
+    //  信息分层（对应用户要求的「可以不直接显示」）：
+    //    · 图标 + 流派色环 → 常驻，一眼看出「有几件、哪几派」
+    //    · 点图标 / 点 +N  → 详情卡片：逐件效果 + 品质 + 属性明细
+    //  属性明细是刻意一起搬进去的：`statPanelMetrics` 在手机横屏下会把
+    //  8 个属性格整块收起（rows: 0），而它原来的兜底说明是「随时切文字界面」——
+    //  那个按钮在 v2.8 已经删掉了。不给这批数值一个新出口，我就不该收它们。
+    // ============================================================
+
+    /** 三档 HUD 密度是否允许常驻遗物条 */
+    relicStripWanted() {
+      var d = this.hudDensity || 'auto';
+      // 「极简」档不常驻遗物条：这一档的语义就是"只留三条资源条，其余都进详情卡片"，
+      // 而详情卡片的入口现在是常驻按钮行里的「属性」胶囊（id = stats）——
+      // 不依赖遗物条，所以这里可以老老实实按档位收掉。
+      // （2.8.1 当初不敢收，是因为那唯一的出口「▸ 属性」正好长在遗物条上。）
+      // 页面被切到后台 / 窗口最小化时，Phaser 的 scale 会被置成 0（浏览器把
+      // canvas 尺寸归零）。这时候**不做任何判断**：保持现状比按 0 宽重排安全得多 ——
+      // 按 0 宽会把遗物条判成"放不下"而收起，回到前台再展开，
+      // 中间那一帧的收起/展开会把玩家调好的自定义布局顶掉。
+      if (!(this.scale.width > 0)) return this._relicStripVisible === true;
+      if (d === 'minimal') return false;
+      // 「完整」档无条件显示（玩家显式要求看更多）；自动与精简档按屏幕判断。
+      // 阈值 17 个图标 ≈ 4 件遗物之后开始出「+N」：再宽也只是把数字往后挪，
+      // 不如把空间留给战场（一排图标本来就该是"扫一眼"的信息，不是清单）。
+      return d === 'full' || this.scale.width >= 420;
+    }
+
+    /** 属性面板此刻是否收起（= 8 个属性格是否被档位 / 屏幕高度收掉） */
+    _statCollapsedNow(sizeW) {
+      var m = this.statPanelMetrics((sizeW && sizeW > 0) ? sizeW : this.scale.width);
+      return m.rows === 0;
+    }
+
+    /** 建立遗物条的显示对象（只建一次；位置与显隐由 layoutRelicStrip 定） */
+    buildRelicStrip() {
+      var self = this;
+      if (this.relicStrip) return;
+      ensureRelicTextures(this, null);
+
+      this.relicStrip = this.add.container(0, 0).setScrollFactor(0);
+      this.relicStripIcons = [];
+      this.relicRects = [];          // 命中区（含 `+N` 那一格）
+
+      this.relicChipLabel = this.add.text(24, 8, '遗物', {
+        fontSize: '10px', color: '#8f86c8', fontStyle: 'bold'
+      }).setOrigin(0, 0.5);
+      this.relicChipLabel.setLetterSpacing(2);
+      this.relicChipLabel.setShadow(0, 1, '#04060f', 4, false, true);
+      this.relicChipCount = this.add.text(24, 8, '', {
+        fontSize: '10px', color: UI.muted, fontStyle: 'bold'
+      }).setOrigin(1, 0.5);
+      this.relicChipEmpty = this.add.text(24, 8, '暂无 · 精英与层主必掉', {
+        fontSize: '10px', color: UI.muted
+      }).setOrigin(0, 0.5);
+      this.relicChipMore = this.add.text(24, 8, '', {
+        fontSize: '10px', color: UI.gold, fontStyle: 'bold'
+      }).setOrigin(0, 0.5);
+      // ⓘ 「▸ 属性」那颗小字入口已经搬走了：现在它是常驻按钮行里的正式胶囊
+      //   （id = stats，见 buildHud）。遗物条这一行只负责"遗物"本身。
+
+      this.relicStrip.add([this.relicChipLabel, this.relicChipCount,
+        this.relicChipEmpty, this.relicChipMore]);
+
+      // 图标池：按 4 件预留（绝大多数一局拿不到更多），不够时按需扩。
+      // 每个图标是一张 16×16 的 Image（白符号 + 流派色环），显示尺寸由布局给。
+      for (var i = 0; i < 4; i++) this._pushRelicIcon();
+
+      this.hud.add(this.relicStrip);
+      this.layoutRelicStrip();
+      this.refreshRelicStrip();
+    }
+
+    /** 往图标池里加一张（纹理在 setTexture 时按 id 指到 rt_rl_<id>） */
+    _pushRelicIcon() {
+      var img = this.add.image(0, 0, 'rt_rl_abyssMark').setOrigin(0.5);
+      img.setVisible(false);
+      this.relicStrip.add(img);
+      this.relicStripIcons.push(img);
+      return img;
+    }
+
+    /**
+     * 按当前尺寸与密度重排遗物条（不改显隐，显隐由 refreshRelicStrip 定）
+     * @param {number} [sizeW] 指定宽度。不传就用实时画布宽度 ——
+     *   与 layoutHudButtons(sizeW) 同一套约定：布局函数都能按"假定宽度"算，
+     *   这样窄屏行为可以脱离真实窗口尺寸被单独验证（真实浏览器里
+     *   `scale.width` 是只读的 getter，想靠赋值模拟窄屏是做不到的）。
+     */
+    layoutRelicStrip(sizeW) {
+      if (!this.relicStrip) return;
+      var W = (sizeW && sizeW > 0) ? sizeW : this.scale.width;
+      // 页面在后台时 scale 会被置 0（见 relicStripWanted 的说明）。
+      // 阈值用 40 而不是 0：舞台刚建立那一帧 scale 可能是 1×1，
+      // 按 1 排出来的坐标（计数被摆到 x = -11）会一直留到下一轮可见时才纠正。
+      if (!(W > 40)) return;
+      var k = clamp(Math.min(W / 900, 1), 0.68, 1);
+      var rh = Math.max(18, Math.round(20 * k));      // 行高
+      this._relicRowH = rh;
+      // 图标直径：与属性面板的字号观感对齐（12px 字 ≈ 18px 图标）
+      var d = Math.max(15, Math.round(17 * k));
+      this._relicIconD = d;
+      var gap = Math.max(3, Math.round(4 * k));
+      this._relicGap = gap;
+
+      // 可用宽度：从 x=24 起，右侧留 12；但若右列（环境 / 诅咒胶囊）会压到
+      // 左侧，就把收窄也一起算进来。
+      // ⚠️ 不能只依赖 _envHudMinTop / _envPanelW：那两个值由 layoutEnvHud 写入，
+      //    而它跑在 layoutHudButtons 的后半段 —— 首帧 / 换层 / 改密度时它们可能还没
+      //    算出来（undefined），此时若按整屏宽度排图标，窄屏上遗物条会横穿到右列底下。
+      //    所以这里**无条件**按右列宽度设一个上界，时序无关。
+      var availRight = W - 12;
+      var rightColLeft = W - 24 - (this._envPanelW || ENV.panelW);
+      // 右列真的会横着撞上左列时，给遗物条留的右边界退到它之前
+      if (rightColLeft < 24 + Math.round(252 * k) + 120) {
+        availRight = Math.min(availRight, Math.max(24 + 96, rightColLeft - 8));
+      }
+
+      // 先给标签与计数留位：标签「遗物」+ 右侧计数文案
+      var labW = this.relicChipLabel.width + 6;
+      var cntW = this.relicChipCount.width + 8;
+      var iconLeft = 24 + Math.round(labW) + 4;
+      var iconRight = availRight - Math.round(cntW);
+
+      var maxN = Math.max(1, Math.floor((iconRight - iconLeft + gap) / (d + gap)));
+      maxN = Math.min(maxN, 12);
+      var rel = this.relics || [];
+      var showAll = rel.length <= maxN;
+      var shown = showAll ? rel.length : Math.max(1, maxN - 1);   // 留一格给 +N
+
+      while (this.relicStripIcons.length < shown) this._pushRelicIcon();
+
+      var y = RELIC_ROW_CY;
+      var x = iconLeft;
+      for (var i = 0; i < this.relicStripIcons.length; i++) {
+        var img = this.relicStripIcons[i];
+        var on = i < shown;
+        img.setVisible(on);
+        if (on) {
+          img.setDisplaySize(d, d);
+          img.setPosition(x + d / 2, y);
+          x += d + gap;
+        }
+      }
+      this._relicShown = shown;
+      this._relicIconLeft = iconLeft;
+      this._relicIconRight = iconRight;
+
+      // 右侧计数 / `+N`：在行内右对齐（图标不一定铺满，跟着图标尾部更自然）
+      var tailX = Math.min(x - gap + Math.max(6, Math.round(8 * k)), availRight);
+      this._relicTailX = tailX;
+      this.relicChipMore.setPosition(tailX, y);
+      this.relicChipLabel.setPosition(24, y);
+      this.relicChipCount.setPosition(availRight, y);
+      this.relicChipEmpty.setPosition(24 + Math.round(labW) + 4, y);
+    }
+
+    /**
+     * 同步遗物条的内容（遗物增减、属性面板是否收起、密度变化都要走这里）
+     * @param {number} [sizeW] 指定宽度（只给验证/测试用，见 layoutRelicStrip）
+     */
+    refreshRelicStrip(sizeW) {
+      if (!this.relicStrip) return;
+      var W = (sizeW && sizeW > 0) ? sizeW : this.scale.width;
+      var rel = this.relics || [];
+      var wanted = this.relicStripWanted() && rel.length > 0;
+      // 没有遗物、或者当前档位不常驻 → 整条不占位，属性面板与下面的按钮整体上移。
+      // （属性明细的入口现在是常驻按钮行里的「属性」胶囊，不再靠这一行托着。）
+      // ⚠️ 收起来的时候必须把**容器本身**也设成不可见：
+      //    这个容器在 buildRelicStrip 里是默认可见的，容器里的「遗物 / 暂无…」小字
+      //    若只靠 _relicStripVisible 这个布尔量"当作没显示"，字还是会画在
+      //    狂怒条与属性面板之间（实测就是这么冒出来的）。
+      if (!wanted) {
+        if (this._relicStripVisible || this.relicStrip.visible) {
+          this._relicStripVisible = false;
+          this.relicStrip.setVisible(false);
+          this.layoutRelicStrip(W);
+          this.layoutStatPanel(W);
+        }
+        return;
+      }
+      if (!this._relicStripVisible) {
+        this._relicStripVisible = true;
+        this.relicStrip.setVisible(true);
+        this.layoutRelicStrip(W);
+        this.layoutStatPanel(W);     // 行了占位，属性面板得往下让
+      }
+      this.layoutRelicStrip(W);
+
+      var shown = this._relicShown || 0;
+      var vis = rel.slice(0, shown);
+      var k = clamp(Math.min(W / 900, 1), 0.68, 1);
+      for (var i = 0; i < shown; i++) {
+        var img = this.relicStripIcons[i];
+        if (!img) continue;
+        var id = (typeof vis[i] === 'string') ? vis[i] : (vis[i] && vis[i].id);
+        // 认不出的 id 走兜底纹理：不认识的遗物也要看得见（宁可显示一个问号），
+        // 而不是在条上留一个空洞 —— 空洞会让玩家以为"我少拿了一件"。
+        var tex = RELIC_VIS[id] ? ('rt_rl_' + id) : 'rt_rl___missing';
+        if (!this.textures.exists(tex)) {
+          if (!this.textures.exists('rt_rl___missing')) {
+            var g = this.make.graphics({ x: 0, y: 0 }, false);
+            RELIC_FALLBACK.draw(relicPen(g));
+            g.lineStyle(1, SCHOOL_COLOR[''], 0.92);
+            g.strokeCircle(8, 8, 7.0);
+            g.generateTexture('rt_rl___missing', 16, 16);
+            g.destroy();
+          }
+          tex = 'rt_rl___missing';
+        }
+        img.setTexture(tex);
+        img.setDisplaySize(this._relicIconD || 17, this._relicIconD || 17);
+      }
+
+      var extra = rel.length - shown;
+      var showMore = extra > 0;
+      this.relicChipMore.setText(showMore ? ('+' + extra) : '');
+      var has = rel.length > 0;
+      this.relicChipLabel.setText('遗物');
+      this.relicChipCount.setText(rel.length + ' 件');
+
+      // 命中区：图标各一格；`+N` 单独一格（开详情卡片）
+      var rects = [];
+      var gap = this._relicGap || 4, d = this._relicIconD || 17;
+      var rowY = RELIC_ROW_CY;
+      var pad = 3;
+      for (var j = 0; j < shown; j++) {
+        var img2 = this.relicStripIcons[j];
+        if (!img2) continue;
+        rects.push({
+          x: img2.x - d / 2 - pad, y: rowY - d / 2 - pad,
+          w: d + pad * 2, h: d + pad * 2, i: j, kind: 'relic'
+        });
+      }
+      if (showMore) {
+        var tw = this.relicChipMore.width;
+        var tx = this._relicTailX != null ? this._relicTailX : this._relicIconLeft;
+        rects.push({
+          x: tx - pad, y: rowY - 9, w: tw + pad * 2, h: 18, i: -1, kind: 'open'
+        });
+      }
+      this.relicRects = rects;
+
+      // 标签与计数的可见性（这一行现在只承载遗物本身）
+      this.relicChipLabel.setVisible(has);
+      this.relicChipEmpty.setVisible(false);
+      this.relicChipCount.setVisible(has);
+      this.relicChipMore.setVisible(showMore);
+    }
+
+    /** 遗物条命中测试（与 uiHitTest 同一优先级：点得到的一定会响应） */
+    relicHitTest(p) {
+      if (!this._relicStripVisible || !this.relicRects) return null;
+      for (var i = 0; i < this.relicRects.length; i++) {
+        var r = this.relicRects[i];
+        if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) return { rect: r, i: r.i };
+      }
+      return null;
+    }
+
+    // ---------- 遗物详情卡片 ----------
+    /**
+     * 打开遗物详情
+     * ------------------------------------------------------------
+     * 战斗暂停的做法与图鉴一致（_pausedForRelic）：它是"停下来读"的信息面板，
+     * 不暂停等于让玩家在弹幕里读说明书。
+     */
+    openRelicPanel() {
+      if (this.relicOpen) { this.closeRelicPanel(); return; }
+      if (this._finished || this.heroDead) return;
+      if (this.panelOverlayOpen()) return;      // 别的面板开着时不叠上来
+      this.relicOpen = true;
+      this.relicPage = 0;
+      this.dodging = false; this.dodgeReadyAt = 0;
+      this.lowerGuard();
+      this._pausedForRelic = !this.mapOpen && !this.deathOpen;
+      if (this._pausedForRelic) { try { this.physics.world.pause(); } catch (e) { /* 忽略 */ } }
+      this.attacking = false; this.diving = false; this.isCharging = false;
+      if (this.chargeRing) this.chargeRing.setVisible(false);
+      if (this.diveFx) this.diveFx.setVisible(false);
+      if (this.hero) this.hero.setVelocity(0, 0);
+      if (this.touchUI) this.touchUI.setVisible(false);
+      this.buildRelicLayer();
+      if (this.relicLayer) {
+        this.relicLayer.setAlpha(0);
+        this.tweens.add({ targets: this.relicLayer, alpha: 1, duration: 180 });
+      }
+      sfx('click');
+      this.syncUiBarVisibility();
+    }
+
+    /**
+     * 直接打开「属性明细」页（不经过遗物列表）
+     * ------------------------------------------------------------
+     * 常驻按钮行里的「属性」胶囊（id = stats）走的就是这条路：
+     * 玩家点它是为了看数值，先弹一张遗物列表只会多一次点击；
+     * 属性页本身不依赖遗物数据（它读的是 hero 与 statItems），所以这条路成立。
+     */
+    openRelicStatsPage() {
+      if (this.relicOpen) return;
+      if (this._finished || this.heroDead) return;
+      if (this.panelOverlayOpen()) return;
+      this.relicOpen = true;
+      this.relicView = 'stats';
+      this.relicPage = 0;
+      this.dodging = false; this.dodgeReadyAt = 0;
+      this.lowerGuard();
+      this._pausedForRelic = !this.mapOpen && !this.deathOpen;
+      if (this._pausedForRelic) { try { this.physics.world.pause(); } catch (e) { /* 忽略 */ } }
+      this.attacking = false; this.diving = false; this.isCharging = false;
+      if (this.chargeRing) this.chargeRing.setVisible(false);
+      if (this.diveFx) this.diveFx.setVisible(false);
+      if (this.hero) this.hero.setVelocity(0, 0);
+      if (this.touchUI) this.touchUI.setVisible(false);
+      this.buildRelicStatsLayer();
+      if (this.relicStatsLayer) {
+        this.relicStatsLayer.setAlpha(0);
+        this.tweens.add({ targets: this.relicStatsLayer, alpha: 1, duration: 180 });
+      }
+      sfx('click');
+      this.syncUiBarVisibility();
+    }
+
+    closeRelicPanel() {
+      if (!this.relicOpen) return;
+      this.relicOpen = false;
+      // ⚠️ 两张卡片都要收：它们同属「遗物」这一个面板、在同一时刻只有一张存在，
+      //    但关闭路径只有这一条 —— 只销毁 relicLayer 的话，从属性页关掉时
+      //    relicStatsLayer 会留在场景里（每开一次多留一层显示对象与一颗按钮）。
+      this.destroyLayer('relicLayer');
+      this.destroyLayer('relicStatsLayer');
+      this.panelButtons.relic = [];
+      this.panelButtons.relicStats = [];
+      this.relicRects2 = [];
+      sfx('click');
+      if (this._pausedForRelic) {
+        this._pausedForRelic = false;
+        try { this.physics.world.resume(); } catch (e) { /* 忽略 */ }
+      }
+      if (this.mapOpen) { this.buildMapLayer(); return; }
+      if (this.deathOpen) return;
+      if (this.touchUI) this.touchUI.setVisible(this._lastInputWasTouch === true);
+      this.syncUiBarVisibility();
+    }
+
+    /** 一行遗物的文字按可用宽度缩字号；实在放不下才截断（下限 9px） */
+    fitRelicText(str, baseFs, availW) {
+      if (!this._measure) this._measure = this.add.text(0, 0, '', { fontSize: '12px' }).setVisible(false);
+      var m = this._measure;
+      m.setText(str);
+      m.setFontSize(baseFs);
+      var w = m.width;
+      if (w <= availW || availW <= 8) return { fs: baseFs, text: str };
+      var fs = Math.max(9, Math.floor(baseFs * availW / w));
+      m.setFontSize(fs);
+      if (m.width <= availW) return { fs: fs, text: str };
+      var cut = str, guard = 0;
+      while (cut.length > 2 && m.width > availW && guard++ < 90) {
+        cut = cut.slice(0, -1);
+        m.setText(cut + '…');
+      }
+      return { fs: fs, text: cut + '…' };
+    }
+
+    buildRelicLayer(sizeW, sizeH) {
+      var self = this;
+      var W = (sizeW && sizeW >= 40) ? sizeW : this.scale.width;
+      var H = (sizeH && sizeH >= 40) ? sizeH : this.scale.height;
+      if (W < 40 || H < 40) { fixCanvasSize(); return null; }
+      if (this.relicLayer) this.destroyLayer('relicLayer');
+
+      var rel = (this.relics || []).slice();
+      var mini = W < 700 || H < 420;
+      var L = this.add.container(0, 0).setDepth(2320).setScrollFactor(0);
+      this.relicLayer = L;
+      this.panelButtons.relic = [];
+      this.relicRects2 = [];
+
+      this.addDim(L, W, H, 0.8);
+      var pad = mini ? 14 : 20;
+      var pw = Math.min(W - (mini ? 16 : 80), mini ? 640 : 720);
+
+      // 高度**按内容算**，不是固定值：
+      // 一局通常只拿 3~8 件遗物，固定 560 会在只有两件时留下半屏空白
+      // （第一版就是这样，看起来像个坏掉的对话框）。清单类面板的规矩是
+      // 「有多少内容就占多少地方」，留白只该出现在内容多到需要翻页时。
+      var rowH = mini ? 38 : 44;
+      var headH = mini ? 46 : 56;          // 标题行 + 与列表的间距
+      var footH = mini ? 40 : 46;
+      var listPadY = mini ? 14 : 18;       // 列表卡自身的内边距（上下各一份）
+      var wantRows = Math.max(rel.length, 1);
+      var listH = wantRows * rowH + listPadY;
+      // 上限：不能顶出画面（内容真多时走分页）
+      var maxListH = H - (mini ? 90 : 150) - headH - footH;
+      if (listH > maxListH) listH = maxListH;
+      var ph = Math.min(headH + listH + footH, H - (mini ? 16 : 60));
+      var px = Math.round((W - pw) / 2), py = Math.round((H - ph) / 2);
+      this.addPanel(L, px, py, pw, ph, {});
+
+      // ---- 页眉：标题 + 件数 ----
+      var titleFs = mini ? 16 : 20;
+      L.add(this.add.text(px + pad, py + (mini ? 14 : 18), '本局遗物', {
+        fontSize: titleFs + 'px', color: UI.title, fontStyle: 'bold', letterSpacing: mini ? 2 : 3
+      }).setOrigin(0, 0.5));
+      var cntTxt = rel.length + ' / ' + Object.keys(RELIC_VIS).length + ' 件';
+      L.add(this.add.text(px + pw - pad, py + (mini ? 14 : 18), cntTxt, {
+        fontSize: (mini ? 11 : 12) + 'px', color: UI.sub
+      }).setOrigin(1, 0.5));
+
+      var headY = py + (mini ? 30 : 38);
+      var bodyTop = headY;
+      var bodyBottom = py + ph - footH;
+
+      if (!rel.length) {
+        L.add(this.add.text(px + pw / 2, (bodyTop + bodyBottom) / 2,
+          '本局还没有遗物\n\n精英战与层主必掉一件；宝箱有概率、商店可买、\n深渊裂隙的三选一也会给。', {
+            fontSize: (mini ? 12 : 13) + 'px', color: UI.muted, align: 'center', lineSpacing: 7
+          }).setOrigin(0.5));
+        this.relicPageCount = 1;
+      } else {
+        // ---- 内嵌列表卡 ----
+        // 左边内缩 14：遗物行开头有流派色条 + 图标，贴着圆角边会让色条像被切掉。
+        var listPadX = 14, listPadY2 = 8;
+        this.addPanel(L, px + pad, bodyTop, pw - pad * 2, bodyBottom - bodyTop, {
+          fill: UI.box, fillAlpha: 0.42, radius: Math.max(8, UI.boxR), lineAlpha: 0.06
+        });
+        var listX = px + pad + listPadX, listY = bodyTop + listPadY2;
+        var listW = pw - pad * 2 - listPadX * 2;
+        var innerH = bodyBottom - bodyTop - listPadY2 * 2;
+        var perPage = Math.max(1, Math.floor(innerH / rowH));
+        this._relicPerPage = perPage;
+        var pageCount = Math.max(1, Math.ceil(rel.length / perPage));
+        this.relicPageCount = pageCount;
+        if (!(this.relicPage >= 0)) this.relicPage = 0;
+        if (this.relicPage >= pageCount) this.relicPage = pageCount - 1;
+        var start = this.relicPage * perPage;
+        for (var i = 0; i < perPage; i++) {
+          var r = rel[start + i];
+          if (!r) break;
+          this.relicCardRow(L, listX, listY + i * rowH, listW, rowH - 3, r, mini);
+        }
+        // 分页提示放在列表卡下沿之内（与图鉴同一处理：写在外侧会压住页脚按钮）
+        if (pageCount > 1) {
+          L.add(this.add.text(px + pw / 2, bodyBottom - 8,
+            '第 ' + (this.relicPage + 1) + ' / ' + pageCount + ' 页', {
+              fontSize: '11px', color: UI.muted
+            }).setOrigin(0.5));
+        }
+      }
+
+      // ---- 页脚：属性 / 翻页 / 关闭 ----
+      var fy = py + ph - footH / 2 - (mini ? 2 : 4);
+      var bw = mini ? 84 : 96, bh = mini ? 30 : 34;
+      // 左边那颗是「属性」而不是「关闭」：手机横屏时属性面板被整块收起，
+      // 这批数值在画面上没有任何别的入口 —— 入口放在第一颗，别让玩家去找。
+      this.uiButton(L, this.panelButtons.relic, 'relic:stats', '属性明细', px + pad, fy, bw + 8, bh, false);
+      if (this.relicPageCount > 1) {
+        var pw2 = mini ? 66 : 78;
+        this.uiButton(L, this.panelButtons.relic, 'relic:prev', '‹ 上页', px + pad + bw + 16, fy, pw2, bh, false);
+        this.uiButton(L, this.panelButtons.relic, 'relic:next', '下页 ›', px + pad + bw + 24 + pw2, fy, pw2, bh, false);
+      }
+      this.uiButton(L, this.panelButtons.relic, 'relic:close', '返回战斗', px + pw - pad - bw, fy, bw, bh, true);
+      return L;
+    }
+
+    /**
+     * 详情卡片里的一行遗物：图标 + 名称 + 品质 + **完整效果描述**
+     * ------------------------------------------------------------
+     * 描述必须完整：玩家点开这张卡片就是为了读它。所以文本按可用宽度
+     * 自动缩字号，而不是先截断再省略号（截断会把"每损失 10% 生命，伤害 +7%"
+     * 这种关键条件吃掉一半）。
+     */
+    relicCardRow(L, x, y, w, h, r, mini) {
+      var id = (typeof r === 'string') ? r : (r && r.id);
+      var vis = relicVis(id);
+      var school = vis.school || '';
+      var tint = SCHOOL_COLOR[school] || SCHOOL_COLOR[''];
+
+      var g = this.add.graphics();
+      g.fillStyle(0xffffff, 0.03);
+      g.fillRoundedRect(x, y, w, h, 8);
+      g.lineStyle(1, 0xffffff, 0.05);
+      g.strokeRoundedRect(x + 0.5, y + 0.5, w - 1, h - 1, 8);
+      // 左侧流派色条：与图鉴选中态同一套语言（一眼扫出流派分布）
+      g.fillStyle(tint, 0.9);
+      g.fillRoundedRect(x + 3, y + 5, 3, h - 10, 1.5);
+      L.add(g);
+
+      // 图标
+      var d = mini ? 20 : 22;
+      var tex = RELIC_VIS[id] ? ('rt_rl_' + id) : 'rt_rl___missing';
+      if (this.textures.exists(tex)) {
+        L.add(this.add.image(x + 14 + d / 2, y + h / 2, tex).setOrigin(0.5).setDisplaySize(d, d));
+      }
+      var tx = x + 14 + d + 8;
+
+      // 名称
+      var name = vis.label || id || '?';
+      L.add(this.add.text(tx, y + h / 2, name, {
+        fontSize: (mini ? 12 : 13) + 'px', color: UI.text, fontStyle: 'bold'
+      }).setOrigin(0, 0.5));
+      var nameW = (mini ? 12 : 13) * name.length + 4;
+
+      // 品质
+      var q = QUALITY_STYLE[vis.quality] || QUALITY_STYLE.common;
+      var qx = tx + nameW + 6;
+      L.add(this.add.text(qx, y + h / 2 + 1, q.name, {
+        fontSize: '10px', color: q.color
+      }).setOrigin(0, 0.5));
+      var qw = 10 * q.name.length + 4;
+
+      // 效果：占满剩余宽度，字号自适应
+      var descX = qx + qw + 10;
+      var availW = x + w - 12 - descX;
+      if (availW > 60) {
+        var fit = this.fitRelicText(vis.desc || '—', mini ? 11 : 12, availW);
+        L.add(this.add.text(descX, y + h / 2, fit.text, {
+          fontSize: fit.fs + 'px', color: UI.sub
+        }).setOrigin(0, 0.5));
+      }
+    }
+
+    /**
+     * 属性明细（第二页）：手机横屏时属性面板被整块收起，这里是它唯一的出口
+     */
+    buildRelicStatsLayer(sizeW, sizeH) {
+      var self = this;
+      var W = (sizeW && sizeW >= 40) ? sizeW : this.scale.width;
+      var H = (sizeH && sizeH >= 40) ? sizeH : this.scale.height;
+      if (W < 40 || H < 40) { fixCanvasSize(); return null; }
+      if (this.relicStatsLayer) this.destroyLayer('relicStatsLayer');
+
+      var mini = W < 700 || H < 420;
+      var hasRelics = !!(this.relics || []).length;   // 底部按钮要不要给「返回遗物」留位，见下
+      var L = this.add.container(0, 0).setDepth(2330).setScrollFactor(0);
+      this.relicStatsLayer = L;
+      this.panelButtons.relicStats = [];
+
+      // 先把要显示的属性算出来 —— 面板高度要**按内容算**。
+      // 固定 300 高的第一版在宽屏上留了大半屏空白，看起来像个没做完的对话框。
+      var hero = this.hero || {};
+      var items = (this.statItems || []).map(function (it) {
+        var v = hero[it.key];
+        v = (typeof v === 'number') ? Math.round(v) : 0;
+        return { label: it.label, v: v + (it.suffix || ''), color: it.text ? it.text.style.color : '#ffffff', on: it.always || v > 0 };
+      });
+      items.push({ label: '生命上限', v: String(hero.maxHp || 0), color: UI.hpFrom, on: true });
+      items.push({ label: '体力上限', v: String(hero.maxStamina || 0), color: UI.stamFrom, on: true });
+      var cols2 = mini ? 2 : 3;
+      var rowsN = Math.max(1, Math.ceil(items.length / cols2));
+
+      this.addDim(L, W, H, 0.82);
+      var pad = mini ? 14 : 20;
+      var rowH = mini ? 22 : 26;
+      var bw2 = mini ? 84 : 96, bh2 = mini ? 30 : 34;
+      // 宽度也要跟着列数走：2 列时 560 宽会让每一行空出小半截
+      var pw = Math.min(W - (mini ? 16 : 120), mini ? (cols2 === 2 ? 460 : 460) : 520);
+      var contentH = rowsN * rowH + 44;                     // 属性行 + 上下说明
+      var ph = Math.min(contentH + (mini ? 84 : 98), H - (mini ? 16 : 80));
+      var px = Math.round((W - pw) / 2), py = Math.round((H - ph) / 2);
+      this.addPanel(L, px, py, pw, ph, {});
+
+      L.add(this.add.text(px + pad, py + (mini ? 14 : 18), '属性明细', {
+        fontSize: (mini ? 16 : 19) + 'px', color: UI.title, fontStyle: 'bold', letterSpacing: 2
+      }).setOrigin(0, 0.5));
+      L.add(this.add.text(px + pw - pad, py + (mini ? 14 : 18), '实时数值', {
+        fontSize: '11px', color: UI.muted
+      }).setOrigin(1, 0.5));
+
+      var headY = py + (mini ? 32 : 40);
+      var footH = mini ? 38 : 44;
+      var bodyTop = headY;
+      var bodyBottom = py + ph - footH;
+      this.addPanel(L, px + pad, bodyTop, pw - pad * 2, bodyBottom - bodyTop, {
+        fill: UI.box, fillAlpha: 0.42, radius: Math.max(8, UI.boxR), lineAlpha: 0.06
+      });
+
+      // 分列：i 落在第几列由「每列行数」决定，不是 item 数的一半 ——
+      // 用 half 的写法在 3 列时会算出负行号（10 项 / 3 列 → 第 3 列 row = -2），
+      // 结果就是「吸 / 连 / 斩」那几个被画到面板外面去。
+      var colW = (pw - pad * 2 - 24) / cols2;
+      var top = bodyTop + 12;
+      for (var i = 0; i < items.length; i++) {
+        var col = Math.floor(i / rowsN);
+        var row = i - col * rowsN;
+        if (col >= cols2) break;
+        var ix = px + pad + 12 + col * (colW + 12);
+        var iy = top + row * rowH;
+        var it = items[i];
+        L.add(this.add.text(ix, iy, it.label, {
+          fontSize: (mini ? 11 : 12) + 'px', color: it.on ? UI.sub : UI.muted
+        }).setOrigin(0, 0.5));
+        L.add(this.add.text(ix + colW - 12, iy, it.v, {
+          fontSize: (mini ? 12 : 13) + 'px',
+          color: it.on ? it.color : UI.muted, fontStyle: 'bold'
+        }).setOrigin(1, 0.5));
+      }
+      L.add(this.add.text(px + pad + 12, bodyBottom - 14,
+        '灰色的项当前为 0；数值会随遗物与增益实时变化。', {
+          fontSize: '10px', color: UI.muted
+        }).setOrigin(0, 0.5));
+
+      var fy = py + ph - footH / 2;
+      // 左边那颗是「返回遗物」，只在**真的有遗物列表可退**时才出现。
+      // 一件遗物都没有时它是多余的：那时玩家是从「属性」按钮直接进来的，
+      // 没有列表可退，右边那颗「返回战斗」已经把出口给全了 ——
+      // 摆两颗都写着"返回战斗"的按钮只会让玩家犹豫点哪个。
+      if (hasRelics) {
+        this.uiButton(L, this.panelButtons.relicStats, 'relic:statsBack', '返回遗物', px + pad, fy, bw2, bh2, false);
+      }
+      this.uiButton(L, this.panelButtons.relicStats, 'relic:close', '返回战斗', px + pw - pad - bw2, fy, bw2, bh2, true);
+      return L;
     }
 
     showFloat(x, y, text, color, size) {
@@ -8744,6 +10925,10 @@
         this.setMeterValue(this.bossMeter, this.boss.hp / this.boss.maxHp);
         this.bossText.setText('生命 ' + Math.max(0, Math.round(this.boss.hp)) + ' / ' + this.boss.maxHp);
       }
+
+      // 遗物条：遗物增减 / 密度设置变化 / 属性面板收起状态变化都要在这里同步。
+      // refreshRelicStrip 自带「状态没变就早退」的守卫，每帧调用的代价只有一次比较。
+      this.refreshRelicStrip();
     }
 
     // ---------- 主循环 ----------
@@ -8752,6 +10937,27 @@
      * Phaser 自己会重传纹理（textureManager.restoreContext），这里只把
      * 尺寸与布局补一遍 —— iOS 从后台回来时可视区基本都变了。
      */
+    /**
+     * 密度变化后重建"按密度生成一次"的资产
+     * ------------------------------------------------------------
+     * 只有两类：血条纹理（名字里带密度，自然换新的）、文字分辨率。
+     * 图标纹理**不重建**（理由见 iconTextureReady）。
+     * ⚠️ 不在这里调 onResize：它可能重建整个关卡，而密度变化和尺寸变化不是一回事。
+     */
+    refreshDensityAssets() {
+      state._dprDirty = false;
+      applyTextDensity(this.children.list);
+      // 血条：宽度没变也要重算纹理，所以先把 m.px 清掉
+      var self = this;
+      ['heroMeter', 'shieldMeter', 'staminaMeter', 'furyMeter', 'bossMeter', 'targetMeter']
+        .forEach(function (k) {
+          var m = self[k];
+          if (!m || !m.fill) return;
+          m.px = 0;
+          try { self.placeMeter(m, m.x, m.y, m.wLogical || m.w); } catch (e3) { /* 单条失败不影响其它 */ }
+        });
+    }
+
     onContextRestored() {
       try { if (this.scale && this.scale.refresh) this.scale.refresh(); } catch (e) { /* 忽略 */ }
       if (this.ready && this.onResize) {
@@ -8763,6 +10969,16 @@
       if (!this.ready) return;
       var dt = Math.min(delta, 40);
       this._dt = dt;
+
+      // 密度变了（换屏 / 系统缩放 / 旋屏后限流档变化）：图标与血条纹理是"按密度
+      // 生成一次"的，必须重建。只在真的变了的那一帧跑一次，平时就一个布尔判断。
+      if (state._dprDirty) this.refreshDensityAssets();
+      // 保险：画布像素与渲染器尺寸对不上时补一次（Phaser 只在 baseSize 变化时
+      // 才会调 renderer.resize，而"画布变大、逻辑尺寸不变"不触发它）。
+      var gm = state.game;
+      if (gm && gm.renderer && gm.canvas && gm.renderer.width !== gm.canvas.width) {
+        try { gm.renderer.resize(gm.scale.baseSize.width, gm.scale.baseSize.height); } catch (e) { /* 忽略 */ }
+      }
 
       // 常驻功能按钮行让位：地图 / 商店 / 图鉴 / 死亡结算 / 撤离确认 / 设置弹窗
       // 打开时，它（depth 2600）会压在这些面板之上，必须先收起来。
@@ -8787,7 +11003,7 @@
       if (this.editMode) this.drawEditOverlay();
       if (!this.running) return;
       this.updateFloats(dt);
-      if (this._viewPaused) { this.clearStaleInput(); return; }   // 切到文字界面时冻结
+      if (this._viewPaused) { this.clearStaleInput(); return; }   // 被 DOM 全屏面板盖住时冻结
       if (this.mapOpen || this.shopOpen || this.codexOpen || this.deathOpen || this.confirmOpen ||
           this.choiceOpen || this.pauseOpen) {
         this.clearStaleInput();   // 面板里按下的键不该在关闭后立刻生效
@@ -8811,6 +11027,8 @@
       }
       this.updateStamina(dt);
       this.updateFury(dt);
+      this.paintLinkMeter();   // 连携点跟着主角走（0 点时内部立刻返回，几乎不花钱）
+      this.updateWebFx();      // 织网者的缠身状态（同上，没被缠时不做任何事）
       this.updateHero(dt);
       this.updateSkillProjectiles();
       this.updateShots(dt);
@@ -8953,6 +11171,9 @@
       if (this.attacking) speed *= 0.45;
       if (guarding) speed *= GUARD.moveScale;
       if (this.furyActive()) speed *= FURY.moveMult;   // 狂怒：移动速度 +25%
+      // 织网者：被网缠住时移动大减 —— 解法是**闪避**（tryDodge 里会切断），
+      // 而不是硬扛着走完它
+      if (this.time.now < (this.webUntil || 0)) speed *= WEB.moveScale;
 
       // ===== 蓄力中：放慢移动 + 视觉反馈；松开瞬间才起跳 =====
       if (this.isCharging) {
@@ -9081,6 +11302,8 @@
         if (p.x < -80 || p.x > self.levelWidth + 80 || p.y > self.groundY + 800 || p.y < -400) {
           p.destroy(); return false;
         }
+        // 有寿命的弹丸（蛛网）：到点自己消失，不会一直飘在场上
+        if (p._lifeUntil && now > p._lifeUntil) { p.destroy(); return false; }
 
         // 触地 / 撞墙 → 插住（不挂碰撞体，直接查静态砖块）
         if (self.projectileGroundY(p.x, p.y) !== null || p.body.blocked.left || p.body.blocked.right || p.body.blocked.down) {
@@ -9092,6 +11315,12 @@
         }
 
         if (!self.heroDead && Phaser.Geom.Intersects.RectangleToRectangle(p.getBounds(), self.hero.getBounds())) {
+          // 织网者的网：不掉血、只缠人 —— 解法是闪避（见 tryDodge）
+          if (p._web) {
+            self.applyWeb(p.x, p.y);
+            p.destroy();
+            return false;
+          }
           // 传弹丸的 x 进去：举盾时才知道这一下是从正面还是背后打来的
           self.damageHero(p._dmg || 6, null, false, p.x);
           self.spark(p.x, p.y, 0xd8b0ff);
@@ -9100,6 +11329,32 @@
         }
         return true;
       });
+    }
+
+    /** 被织网者的网缠住：移动大减，直到**闪避**把它撕开或时间耗尽 */
+    applyWeb(x, y) {
+      var now = this.time.now;
+      var already = now < (this.webUntil || 0);
+      this.webUntil = now + WEB.duration;
+      this.spark(x, y, 0xa8e88a);
+      this.cameras.main.flash(90, 110, 190, 100);
+      if (!already) {
+        // 第一次被缠住时把"解法"直接写进飘字 —— 不指望玩家去图鉴里翻
+        this.showFloat(this.hero.x, this.hero.y - 120, '被蛛网缠住 · 闪避可撕开', '#a8e88a', 17);
+        sfx('thorn');
+      }
+    }
+
+    /** 缠身状态的可见性（跟着主角走；到期自动消失） */
+    updateWebFx() {
+      var on = this.time.now < (this.webUntil || 0);
+      if (!this.webFx) {
+        if (!on) return;
+        this.webFx = this.add.circle(0, 0, 26, 0xa8e88a, 0.16).setDepth(9);
+        this.webFx.setStrokeStyle(2, 0xd8ff9a, 0.5);
+      }
+      this.webFx.setVisible(on && this.running && !this.heroDead);
+      if (on && this.hero) this.webFx.setPosition(this.hero.x, this.hero.y - 30);
     }
 
     /** 投掷物的落点：命中地面砖块 / 平台时返回台面 y，否则 null */
@@ -9189,8 +11444,8 @@
         var erode = 3;
         this.hero.hp = Math.max(1, this.hero.hp - erode);
         this.showFloat(this.hero.x, this.hero.y - 96, '深渊侵蚀 -' + erode, '#c79aff', 16);
-        // 诅咒与环境效果换层重掷：交给宿主（它持有文字版试炼的诅咒池与环境池），
-        // 掷完会通过 setCursesEnv 回传，保证 2D 与文字界面用的是同一份数据
+        // 诅咒与环境效果换层重掷：交给宿主（它持有内核的诅咒池与环境池），
+        // 掷完会通过 setCursesEnv 回传，保证 2D 与内核（文字模式）用的是同一份数据
         if (this.game && this.game.events) this.game.events.emit('trial2d:floor', { floor: next });
         this.emitRt('rt:floor', {
           floor: next, points: Math.round(this.points),
@@ -9457,7 +11712,7 @@
     /**
      * 通知宿主为本房间重掷环境效果
      * 2D 不自己掷：环境的名字与数值都由经典模式的池子生成（难度、层数都影响强度），
-     * 掷完宿主会通过 setCursesEnv 回传，文字界面读到的也就是同一份。
+     * 掷完宿主会通过 setCursesEnv 回传，内核（文字模式）读到的也就是同一份。
      */
     rollRoomEnv(type) {
       if (!this.running) return false;
@@ -9660,6 +11915,9 @@
         }
         var spr = e.sprite, def = e.def;
 
+        // 献祭者给的护盾环跟着它走（不跟随的话环会留在原地，看不出谁有盾）
+        if (e.shieldRing && e.shieldRing.visible) e.shieldRing.setPosition(spr.x, spr.y - 26);
+
         // 兜底：万一它还是被挤进了地面（物理意外、穿模）。
         // 沉在地面以下的敌人打不到、也清不掉 —— 整局卡死；而且它还在视野里，
         // 连方向箭头都不会给，玩家只能看着「剩余敌人 1」发呆。
@@ -9762,8 +12020,8 @@
 
         var aware = dist < def.detect && Math.abs(dy) < 240;
 
-        // --- 远程单位保持距离 ---
-        if (aware && def.behavior === 'shooter' && dist < (def.keepDist || 200)) {
+        // --- 远程 / 辅助单位保持距离 ---
+        if (aware && (def.behavior === 'shooter' || def.behavior === 'support') && dist < (def.keepDist || 200)) {
           spr.setVelocityX(-dirToHero * def.speed);
           spr.setFlipX(dirToHero < 0);
           spr.play(self.mobAnimKey(e, 'walk'), true);
@@ -9773,6 +12031,20 @@
         if (aware) {
           e.state = 'chase';
           spr.setFlipX(dirToHero < 0);
+
+          // 铁壁兵：盾面朝向独立维护 + **转身慢半拍**。
+          // 少了这段延迟，它每帧都转向玩家 → 永远正面 → "绕后"这条解法等于不存在
+          // （只剩跳劈一条路，而设计意图是两条解法）。这段延迟窗口就是绕后的机会。
+          if (def.shieldFront) {
+            if (!e.faceDir) e.faceDir = spr.flipX ? -1 : 1;
+            if (e.faceDir !== dirToHero) {
+              if (!e._turnAt) e._turnAt = time + SHIELD_TURN;
+              else if (time >= e._turnAt) { e.faceDir = dirToHero; e._turnAt = 0; }
+            } else {
+              e._turnAt = 0;
+            }
+            spr.setFlipX(e.faceDir < 0);   // 视觉与判定用同一个值，否则玩家看不懂
+          }
 
           // 骷髅骑兵：中远距离有概率改掷长矛（贴脸不掷；每次决策只掷一次判定）
           if (def.throw && dist >= MOB_THROW.minDist && dist <= MOB_THROW.maxDist &&
@@ -9817,6 +12089,17 @@
           spr.setVelocityX(e.dir * def.speed * 0.5);
           spr.setFlipX(e.dir < 0);
           spr.play(self.mobAnimKey(e, 'walk'), true);
+        }
+
+        // --- 献祭者：周期性给周围同伴套血盾（它自己不追不打）---
+        //     它制造的不是伤害压力，而是"你打不动别的怪了" —— 逼玩家换目标。
+        //     排在这里（而不是塞进 windup）是因为它**不攻击**，只是周期施法。
+        if (def.auraShield && aware) {
+          if (!e.nextSpecial) e.nextSpecial = time + ri(2400, 3600);
+          if (time >= e.nextSpecial) {
+            e.nextSpecial = time + ri(3000, 4200);
+            self.sacrificeShield(e);
+          }
         }
 
         // --- Boss 特殊：周期性跳跃砸地 ---
@@ -9917,9 +12200,73 @@
       sfx('spear');
     }
 
+    /**
+     * 织网者吐网：一张缓慢的、不打伤害的网 —— 命中后把玩家缠住（移动掉到 45%）。
+     * 刻意做得比伤害弹**更慢、更大、更亮**：它不负责掉血，
+     * 负责逼玩家在"闪掉这一发"和"先吃一下换个输出窗口"之间做选择。
+     */
+    enemyWeave(e) {
+      var spr = e.sprite;
+      var dir = this.hero.x >= spr.x ? 1 : -1;
+      var mx = spr.x + dir * 26, my = spr.y - 34;
+      var p = this.add.circle(mx, my, 10, 0xa8e88a, 0.45).setDepth(9);
+      p.setStrokeStyle(2, 0xd8ff9a, 0.9);
+      this.physics.add.existing(p);
+      p.body.setAllowGravity(false);
+      try { p.body.setCircle(12); } catch (err) { /* 忽略 */ }
+      // Arc（Shape）没有 setVelocity，而 updateProjectiles 是按"有 setVelocity 的弹丸"
+      // 写的（触地插住、抛物线积分都会调它）—— 在这里补一个同名方法，
+      // 整条弹丸管线就不必为蛛网开特例。
+      p.setVelocity = function (vx, vy) { if (this.body) this.body.setVelocity(vx, vy); return this; };
+      var ang = Math.atan2((this.hero.y - 30) - my, this.hero.x - mx);
+      p.setVelocity(Math.cos(ang) * WEB.speed, Math.sin(ang) * WEB.speed);
+      p._web = true;
+      p._dmg = 0;
+      p._lifeUntil = this.time.now + 3600;
+      this.projectiles.push(p);
+      this.showFloat(spr.x, spr.y - 86, '吐网', '#a8e88a', 15);
+      sfx('shot');
+    }
+
+    /**
+     * 献祭者：给周围同伴套一层"血盾"（吸伤），自己也吃一半。
+     * 关键设计：它自己**几乎不构成威胁**，威胁是"你打不动别的怪了"。
+     * 所以必须同时满足两条，否则它只是烦躁来源而不是机制：
+     *   · 看得见 —— 每个中盾的怪身上有青色环 + 飘字
+     *   · 杀得掉 —— 血量不高，而且它自己不还手
+     */
+    sacrificeShield(e) {
+      var self = this;
+      var amount = Math.round(6 + this.floor * 1.2);
+      var radius = 320;
+      var n = 0;
+      this.enemies.forEach(function (o) {
+        if (!o.alive || o === e) return;
+        if (Math.abs(o.sprite.x - e.sprite.x) > radius) return;
+        o.shield = Math.max(o.shield || 0, amount);
+        self.refreshEnemyShieldRing(o);
+        self.showFloat(o.sprite.x, o.sprite.y - 88, '血盾 +' + amount, '#ff8aa0', 14);
+        n++;
+      });
+      // 自己也吃一半：完全不给，它一被集火就没了、机制撑不到玩家做决定；
+      // 给满又会让"优先击杀"变成纯耗时间
+      e.shield = Math.max(e.shield || 0, Math.round(amount * 0.5));
+      this.refreshEnemyShieldRing(e);
+
+      var ring = this.add.circle(e.sprite.x, e.sprite.y - 26, 16, 0xff8aa0, 0.22).setDepth(11);
+      ring.setStrokeStyle(3, 0xff8aa0, 0.9);
+      this.tweens.add({ targets: ring, radius: radius, alpha: 0, duration: 380, onComplete: function () { ring.destroy(); } });
+      this.showFloat(e.sprite.x, e.sprite.y - 106, '血祭 · 护佑 ' + n + ' 名同伴', '#ff8aa0', 16);
+      sfx('levelUp');
+      if (state.settings.screenShake2D !== false) this.cameras.main.shake(80, 0.003);
+    }
+
     enemyShoot(e) {
       var spr = e.sprite, def = e.def;
       var dir = this.hero.x >= spr.x ? 1 : -1;
+
+      // 织网者不发普通弹：它的"攻击"是一张网（见上）
+      if (def.web) { this.enemyWeave(e); return; }
 
       // 镜像怪：用玩家英雄的同一种弹道（颜色换成镜像紫），慢一档，看得见、闪得掉
       if (def.rangedKind && 角色形象.SHOTS[def.rangedKind]) {
@@ -10138,7 +12485,14 @@
     getSettings: function () { return state.settings || loadSettings(); },
 
     setSettings: function (patch) {
+      var before = (state.settings && state.settings.hudDensity) || 'auto';
       var s = saveSettings(patch);
+      // HUD 密度会改变画面上"哪些信息常驻"，必须**当场**重排，
+      // 否则玩家在设置里切了档，回到战斗却什么都没变（要等下次开局才生效）。
+      var after = (s && s.hudDensity) || 'auto';
+      if (before !== after && state.scene && state.scene.ready) {
+        try { state.scene.applyHudDensity(); } catch (e) { console.warn('[战斗2D] 应用 HUD 密度失败：', e); }
+      }
       if (s.enabled === false) API.hide(); else if (state.booted) API.show();
       return s;
     },
@@ -10146,9 +12500,10 @@
     setActionHandler: function (fn) { state.actionHandler = fn; },
 
     /**
-     * 注册宿主桥接（试炼文字逻辑）：
-     *   exit(result)          结束本局并退出试炼（宿主负责回写结果）
-     *   toggleView(snapshot)  切到文字界面（宿主负责隐藏画布 + 显示文字面板）
+     * 注册宿主桥接（持有内核状态的宿主）：
+     *   exit(result)          结束本局并把结果交回宿主（宿主负责回写与收尾）
+     *   toggleView(snapshot)  遗留键：原本用于切到文字界面，v2.8 删掉那颗按钮后
+     *                         引擎已无调用点（键名保留，宿主自己实现不受影响）
      *   shopData(points)      取商店目录（含金币同步）
      *   shopBuy(id, points)   购买商品（返回 {ok,msg,points,name}）
      */
@@ -10213,8 +12568,12 @@
         try {
           // 换档前重新探测：上一轮失败可能刚刚把 context 用掉，缓存会误导画质决策
           if (plan.minimal) probeWebGL(true);
+          // 建引擎**之前**先把这一档密度算出来：场景 create() 里的图标 / 血条纹理
+          // 都是"按密度生成一次"的，开机后再变就会出现纹理与大盘不同口径。
+          preseedDensity(container, plan.type === Phaser.WEBGL);
           state.game = createGame(container, Phaser, plan.type, plan.minimal);
           state.booted = true;
+          installDensity(state.game);
           state.renderMode = (state.game.renderer && state.game.renderer.type === Phaser.WEBGL) ? 'webgl' : 'canvas';
           state.compatMode = !!plan.minimal;
           // Canvas 渲染器是纯 CPU 光栅化：强制最低画质，否则移动端必掉帧
@@ -10288,7 +12647,7 @@
 
     /**
      * 更新诅咒与环境效果（宿主在换层 / 状态变化时调用）
-     * curses 传名字数组（与文字版试炼同一份），environment 传 generateEnvironmentEffect 的结果
+     * curses 传名字数组（与内核同一份），environment 传 generateEnvironmentEffect 的结果
      */
     setCursesEnv: function (curses, env) {
       if (!state.scene || !state.scene.ready) return null;
@@ -10472,18 +12831,32 @@
       return { fury: Math.round(state.scene.fury), max: FURY.max, active: state.scene.furyActive() };
     },
 
+    /** 连携（技巧资源）：回归脚本用它验「攒 / 消费 / 挨打清零」，作弊面板也能直接塞 */
+    getLink: function () {
+      if (!state.scene || !state.scene.ready) return null;
+      var s = state.scene;
+      return { link: s.link || 0, max: Math.max(1, LINK.max), dmgMult: LINK.dmgMult };
+    },
+    setLink: function (n) {
+      if (!state.scene || !state.scene.ready) return false;
+      var s = state.scene;
+      s.link = Math.max(0, Math.min(Math.max(1, LINK.max), Math.round(n || 0)));
+      s.paintLinkMeter();
+      return true;
+    },
+
     stopRun: function () {
       state.pendingStart = null;
       if (state.scene && state.scene.ready) state.scene.abortRun();
     },
 
-    /** 切到文字界面：暂停本局（画面交给宿主隐藏） */
+    /** 整场景停更（`scene.pause()`）：宿主需要「让 2D 彻底停住」时用（DOM 面板走 freezeForDom） */
     pauseRun: function () {
       if (state.scene && state.scene.ready) state.scene.pauseForView();
       return true;
     },
 
-    /** 从文字界面回到 2D 画面 */
+    /** 解除 pauseRun 的整场景停更 */
     resumeRun: function () {
       if (state.scene && state.scene.ready) state.scene.resumeFromView();
       return true;
@@ -10511,13 +12884,13 @@
       return !!(state.scene && state.scene.ready && state.scene._viewPaused);
     },
 
-    /** 实时战况快照（文字界面显示用） */
+    /** 实时战况快照（对外读取用；文字界面移除后引擎内已无调用点） */
     snapshot: function () {
       if (state.scene && state.scene.ready) return state.scene.buildSnapshot();
       return null;
     },
 
-    /** 直接设置当前金币（文字商店购买后回写） */
+    /** 直接设置当前金币（宿主结算后回写：经典2D.js 的 syncPoints 把内核金币推给引擎） */
     setPoints: function (n) {
       if (!state.scene || !state.scene.ready || typeof n !== 'number' || !isFinite(n)) return false;
       state.scene.points = Math.max(0, Math.round(n));
@@ -10552,7 +12925,10 @@
         compatMode: !!state.compatMode,
         contextLost: !!state.contextLost,
         appleTouch: isAppleTouch(),
-        standalone: isStandalone()
+        standalone: isStandalone(),
+        // 高密度屏：真机"还是糊"时先看这两个数
+        deviceDpr: realDeviceDpr(),
+        renderDpr: Math.round(renderDpr() * 100) / 100
       };
       if (s && s.ready) {
         o.floor = s.floor;
@@ -10601,8 +12977,13 @@
           diveMult: DIVE.mult, diveBury: Math.round(DIVE.buryChance * 100) / 100,
           staminaMax: STAMINA.max, staminaRegen: Math.round(STAMINA.regen),
           furyKill: FURY.gainKill, rangedPierce: RANGED_ATTACK.ranger.pierce,
-          rangedSpeed: RANGED_ATTACK.ranger.speed
+          rangedSpeed: RANGED_ATTACK.ranger.speed,
+          linkMax: Math.max(1, LINK.max), linkDmgMult: Math.round(LINK.dmgMult * 100) / 100
         };
+        // 连携（技巧资源）：验「完美判定 → 攒 → 消费 → 挨打清零」这条链全靠这几个数
+        o.link = s.link || 0;
+        o.linkMax = Math.max(1, LINK.max);
+        o.linkPips = s.linkPips ? s.linkPips.filter(function (p) { return p && p.visible; }).length : 0;
         o.target = s.nearestEnemy ? {
           name: s.nearestEnemy.name, hp: Math.round(s.nearestEnemy.hp),
           atk: Math.round(s.nearestEnemy.atk), tier: s.nearestEnemy.tier,
@@ -10683,6 +13064,10 @@
       return o;
     },
 
+    /** 只读设备诊断（真机排查用：分辨率 / 密度 / 相机到底落在哪一档） */
+    设备诊断: function () { return densityReport(); },
+    deviceDiagnostics: function () { return densityReport(); },
+
     /** 模拟按键（自动化测试用） */
     press: function (action) {
       var s = state.scene;
@@ -10745,7 +13130,7 @@
         s.enemies.forEach(function (e) { if (e.alive) s.damageEnemy(e, { dmg: 999999, crit: false }, false); });
         return true;
       }
-      // ===== 画面内界面（死亡 / 商店 / 确认框 / 视图）测试辅助 =====
+      // ===== 画面内界面（死亡 / 商店 / 确认框）测试辅助 =====
       if (action === 'dive') {
         // 跳劈：滞空时挥砍（需先离地，否则为普通挥砍）
         s.tryAttack();
@@ -10811,7 +13196,7 @@
       if (action === 'furyAdd') { return s.addFury(arguments[1] || 0); }
       if (action === 'furyState') return {
         fury: Math.round(s.fury), max: FURY.max, active: s.furyActive(),
-        leftMs: Math.round(s.furyLeft()), autoInMs: s.furyAutoAt ? Math.max(0, Math.round(s.furyAutoAt - s.time.now)) : 0,
+        leftMs: Math.round(s.furyLeft()),
         text: s.furyText ? s.furyText.text : null, hintVisible: s.furyHint ? s.furyHint.visible : null, ringVisible: s.furyRing ? s.furyRing.visible : null
       };
       if (action === 'shopTab') { s.onShopAction('tab' + (s.shopTab + 1)); return true; }

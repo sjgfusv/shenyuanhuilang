@@ -3674,6 +3674,113 @@ button:disabled {
 }
 
 /* ============================================================
+   设置面板：卡片式选择（多档 + 每档含义不同时用它）
+   ------------------------------------------------------------
+   为什么不复用 .seg-option：那是一排扁平的胶囊，只适合「小/标准/大」
+   这种**一眼就知道差别**的档位。而 HUD 密度是四档、每档含义差得远
+   （完整 = 属性面板与遗物栏都常驻；极简 = 只留三条血条），
+   光给四个词玩家选不出来，得把每档"常驻什么"写在选项里面。
+
+   布局也不走「左文字右控件」那一套：四档卡片需要整行宽度才排得开，
+   硬塞进右半边就是文字被压成两行、按钮那条窄带又空得发慌。
+   这里改成**纵向**——标题与说明跨满整行，卡片组在下面独占一行。
+   ============================================================ */
+.settings-item-cards {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    /* ⚠️ 必须显式覆盖 .setting-item 的 space-between：
+       那一套是给「左文字 + 右控件」用的，换成纵向排列之后它会继续把
+       标题与卡片组推到两端，中间留出一大块空白（实测 930px 的行里
+       信息块 291px、卡片组 384px，中间空掉 255px）。
+       改成纵向布局时必须把主轴对齐一起改掉 —— 这是它最容易漏的一处。 */
+    justify-content: flex-start;
+}
+
+/* 纵向排列后两个子块都要占满整行：space-between 时代它们靠 flex 收缩自适应，
+   换成 flex-start 之后如果还按内容宽度走，整行右侧会是一片空地。 */
+.settings-item-cards > .setting-info,
+.settings-item-cards > .card-choice {
+    width: 100%;
+}
+
+.settings-item-cards .setting-info {
+    gap: 3px;
+}
+
+/* 卡片组：两列铺满 —— 四档正好成 2×2，一列会把说明压成三行高 */
+.card-choice {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+/* 跨列：卡片式这一项的信息量本来就比别的项大（标题 + 说明 + 四张卡片），
+   挤在 .settings-list 的三列之一里会变成一条又窄又高的竖条。
+   ⚠️ 只给「独占一行」的项加这个类 —— 加错了会把整列宽度撑变形。 */
+.settings-item-wide {
+    grid-column: 1 / -1;
+}
+
+@media (max-width: 768px) {
+    /* 窄屏下 .settings-list 降级成单列，跨列声明会自动失效，无需额外处理 */
+    .settings-item-wide { grid-column: auto; }
+}
+
+.card-choice-option {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    text-align: left;
+    padding: 9px 11px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    transition: background 0.18s ease, border-color 0.18s ease, transform 0.12s ease;
+}
+
+.card-choice-option:hover {
+    background: rgba(255, 255, 255, 0.075);
+    border-color: rgba(255, 255, 255, 0.16);
+}
+
+.card-choice-option:active { transform: scale(0.985); }
+
+.card-choice-option.active {
+    background: rgba(115, 240, 180, 0.10);
+    border-color: rgba(115, 240, 180, 0.38);
+}
+
+/* 档位名：选中时用强调绿，未选中保持可读的次级白 */
+.card-choice-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.card-choice-option.active .card-choice-label { color: #73f0b4; }
+
+/* 每档"到底是什么"：小字、两行以内，排版上比档位名弱一档 */
+.card-choice-note {
+    font-size: 0.64rem;
+    line-height: 1.45;
+    color: var(--muted);
+}
+
+.card-choice-option.active .card-choice-note { color: #9fd8c4; }
+
+@media (max-width: 480px) {
+    .setting-item-cards { gap: 8px; }
+    .card-choice { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+    .card-choice-option { padding: 8px 9px; }
+    .card-choice-note { font-size: 0.6rem; }
+}
+
+/* ============================================================
    存档管理界面
    ============================================================ */
 .save-manager-list {
@@ -4099,11 +4206,52 @@ button:disabled {
 /* ============================================================
    设置界面
    ============================================================ */
+/* ------------------------------------------------------------
+   横版排版（v2.8）
+   ------------------------------------------------------------
+   原来是「一列 14 项」的竖长条（max-width 440px）：一屏装不下、必须滚动，
+   而这些全是"扫一眼就调完"的开关 —— 竖排等于逼玩家上下找。
+   改成**按类别分列**：弹窗宽而扁，三列并排，整块内容一屏看完，
+   与 2D 画面的横版布局同构。
+   `minmax(0, 1fr)` 不能省：列宽下限默认是 min-content，
+   而「标签 + 开关」那一行有最小宽度，会把列撑破容器并横向溢出。
+   ------------------------------------------------------------ */
 .settings-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 22px 24px;
+    align-items: start;
+    padding: 4px 0 0;
+}
+
+.settings-group {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 4px 0;
+    gap: 10px;
+    min-width: 0;
+}
+
+/* 分组标题：小字 + 宽字距 + 一条细线。它承载分类信息，
+   所以不做成"标题上方的引导标签"，而是分栏自己的题头。 */
+.settings-group-title {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+    padding-bottom: 7px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    margin-bottom: 2px;
+}
+
+.settings-foot {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 20px;
+}
+
+.settings-foot .action-button {
+    width: auto;
+    min-width: 112px;
 }
 
 .setting-item {
@@ -5092,11 +5240,48 @@ button:disabled {
   }
 }
 /* ===== 设置面板适配 ===== */
-@media (max-width: 768px) {
+/* 横版设置面板的宽度与降级（与上面的 .settings-list 三列配套） */
+#settingsModal .modal-content {
+    width: min(94vw, 980px);
+    max-width: min(94vw, 980px);
+}
+
+/* 设置项在变窄的列里：允许中文长描述换行，但绝不横向撑破列宽 */
+#settingsModal .setting-item {
+    padding: 9px 12px;
+    min-width: 0;
+}
+
+#settingsModal .setting-info {
+    min-width: 0;
+}
+
+#settingsModal .setting-desc {
+    overflow-wrap: anywhere;
+}
+
+/* 阈值取 720 而不是 900：横屏手机（≈800 宽）刚好落在 3 列里 ——
+   14 项分 3 列每列才 4~6 行，一屏基本够；降到 2 列会让每列涨到 7~10 行，
+   内容直接翻倍要滚动，横版的意义也就没了。 */
+@media (max-width: 720px) {
+  #settingsModal .settings-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
   #settingsModal .modal-content {
-    max-width: 420px;
+    width: min(94vw, 460px);
+    max-width: min(94vw, 460px);
   }
 
+  #settingsModal .settings-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+}
+
+@media (max-width: 768px) {
   .setting-item {
     padding: 8px 12px;
   }
@@ -6070,31 +6255,43 @@ body.realtime-trial .sidebar-overlay {
   }
 }
 
-/* 矮视口 + 宽视口（横屏手机）：设置项排双列，一屏塞得下全部开关 */
+/* 矮视口 + 宽视口（横屏手机 ≈800×360）：设置面板已经是横版三列，
+   这里只补"更扁"的那一半 —— 压缩内边距与行距，让 14 项尽量一屏看完。
+   列数保持 3：4 列会把「2D 试炼按键自定义」这类长标签挤到换行。 */
 @media (max-height: 560px) and (min-width: 600px) {
   #settingsModal .modal-content {
-    width: min(96vw, 820px);
-    /* 覆盖 HTML 上的内联 max-width: 440px */
-    max-width: min(96vw, 820px) !important;
+    width: min(96vw, 900px);
+    /* !important 保留：这是对"任何更宽规则"的最终收口，
+       横屏手机上必须真正铺开，否则三列会各自挤成一条 */
+    max-width: min(96vw, 900px) !important;
+    padding: 16px;
   }
 
   #settingsModal .settings-list {
-    display: grid;
-    /* 必须写 minmax(0,1fr)：直接用 1fr 时列宽下限是 min-content，
-       设置项里「标签 + 开关」的最小宽度会把两列撑破容器，
-       结果是弹窗被压窄、内容横向溢出。 */
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 8px;
-    align-content: start;
+    /* 必须显式写回 3 列：上面 (max-width: 720px) 的降级规则对这个视口也成立，
+       不写就会在横屏手机上塌成 2 列，内容高度翻倍、必须滚动才能看完。 */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px 16px;
   }
 
-  #settingsModal .setting-info {
-    min-width: 0;
+  #settingsModal .settings-group {
+    gap: 7px;
+  }
+
+  #settingsModal .settings-group-title {
+    padding-bottom: 5px;
+  }
+
+  #settingsModal .setting-item {
+    padding: 6px 10px;
   }
 
   #settingsModal .setting-desc {
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 0.62rem;
+  }
+
+  #settingsModal .settings-foot {
+    margin-top: 12px;
   }
 }
 
@@ -6592,21 +6789,21 @@ input:disabled, select:disabled, textarea:disabled { opacity: 0.5; cursor: not-a
 
 /* 2D 实时战斗里收掉右下角的 ☰
    ------------------------------------------------------------
-   它的 z-index 是 100001，本来就盖在画布（9000）之上 —— 也就是说文字界面那套
-   侧边栏在 2D 里**一直都能用**，缺的只是入口（☰ 因为正好压在横屏手机的「攻击」键上，
-   在 realtime-trial 时代就被 display:none 掉了）。
-   现在入口改由引擎 HUD 的「更多」按钮承担（见 经典2D.js 的 openSidePanel），
-   所以这里把 ☰ 收掉；**侧边栏本体（.sidebar）保持不动** —— 它才是"文字界面那些按钮"。 */
+   它的 z-index 是 100001，本来就盖在画布（9000）之上。
+   v2.8 起侧边栏的那批功能（作弊 / 通关条件 / 教程 / 图鉴 / 存档管理 / 难度 /
+   切换老版）已经**画进画布内的「菜单」界面**，2D 画面不再需要这个 DOM 入口；
+   ☰ 在横屏手机上还正好压住「攻击」键，所以这里收掉它。
+   **侧边栏本体（.sidebar）保持不动** —— 开始界面 / 文字界面照旧用它。 */
 body.classic2d .sidebar-toggle {
     display: none !important;
 }
 
 /* 互斥保险：**只要不在 2D 里，☰ 一定可见**
    ------------------------------------------------------------
-   2D 画面期间它由上面那条收起来（入口改到 HUD 的「更多」按钮，
+   2D 画面期间它由上面那条收起来（那里的入口是画布菜单，
    因为 ☰ 固定在右下角、横屏手机上正好压住「攻击」键）。
    这条 :not() 规则是防"某条更靠后的规则意外命中导致入口彻底消失"——
-   玩家唯一的侧边栏入口不该有任何丢失的可能。 */
+   非 2D 视图里它是侧边栏唯一的入口，不该有任何丢失的可能。 */
 body:not(.classic2d) .sidebar-toggle {
     display: flex !important;
 }

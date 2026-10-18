@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>深渊回廊 · README 徽章预览</title>
+<style>
+  body { margin: 0; padding: 24px; font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif; background: #e9edf5; color: #1b2233; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.tip { margin: 0 0 20px; color: #5a6478; font-size: 13px; }
+  .panel { border-radius: 10px; padding: 20px; margin-bottom: 18px; }
+  .light { background: #ffffff; border: 1px solid #d6dce8; }
+  .dark  { background: #0d1117; border: 1px solid #21262d; color: #c9d1d9; }
+  .panel h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; letter-spacing: .04em; }
+  .light h2 { color: #5a6478; }
+  .dark h2 { color: #8b949e; }
+  .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .row img { display: block; }
+  /* 放大组：检查文字是否溢出、是否居中 */
+  .zoom { display: flex; gap: 14px; flex-wrap: wrap; }
+  .zoom figure { margin: 0; text-align: center; }
+  .zoom img { width: 264px; image-rendering: pixelated; }
+  .zoom figcaption { font-size: 11px; margin-top: 4px; }
+  code { background: rgba(125,125,125,.18); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>README 徽章预览</h1>
+  <p class="tip">这 5 个徽章是仓库内自带的 SVG 文件（<code>badges/*.svg</code>），不依赖任何外网服务。下面是它们在 GitHub 亮色 / 暗色主题下的样子。</p>
+
+  <div class="panel light">
+    <h2>亮色主题（Light）· 原始大小</h2>
+    <div class="row">
+      <img src="../badges/version.svg" alt="版本" />
+      <img src="../badges/phaser.svg" alt="引擎" />
+      <img src="../badges/no-build.svg" alt="零构建" />
+      <img src="../badges/pwa.svg" alt="PWA" />
+      <img src="../badges/platform.svg" alt="平台" />
+    </div>
+    <h2>放大 2 倍 · 检查描边与居中</h2>
+    <div class="zoom">
+      <figure><img src="../badges/version.svg" alt="" /><figcaption>version.svg</figcaption></figure>
+      <figure><img src="../badges/phaser.svg" alt="" /><figcaption>phaser.svg</figcaption></figure>
+      <figure><img src="../badges/no-build.svg" alt="" /><figcaption>no-build.svg</figcaption></figure>
+      <figure><img src="../badges/pwa.svg" alt="" /><figcaption>pwa.svg</figcaption></figure>
+      <figure><img src="../badges/platform.svg" alt="" /><figcaption>platform.svg</figcaption></figure>
+    </div>
+  </div>
+
+  <div class="panel dark">
+    <h2>暗色主题（Dark）· 原始大小</h2>
+    <div class="row">
+      <img src="../badges/version.svg" alt="版本" />
+      <img src="../badges/phaser.svg" alt="引擎" />
+      <img src="../badges/no-build.svg" alt="零构建" />
+      <img src="../badges/pwa.svg" alt="PWA" />
+      <img src="../badges/platform.svg" alt="平台" />
+    </div>
+  </div>
+</body>
+</html>

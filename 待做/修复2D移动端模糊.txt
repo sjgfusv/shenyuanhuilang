@@ -1,0 +1,202 @@
+任务：修复《深渊回廊》2D 实时战斗在移动端的 UI 模糊问题
+
+
+一、一句话结论
+
+移动端发糊有两个独立根因，必须分别修：
+
+1. Phaser 画布没按 devicePixelRatio 渲染，导致整屏轻微发糊。
+2. 自定义面板缩放走的是 setScale（位图拉伸）而不是按目标尺寸重绘，
+   导致缩小糊成一团、放大变马赛克。
+
+只改其中一条，另一条仍会糊。
+
+
+二、项目背景
+
+前端小游戏《深渊回廊》，HTML + JavaScript + CSS，Phaser 3 渲染，代码量 8 万行以上。
+入口：主界面.html
+
+关键文件：
+  战斗2D.js      2D 实时战斗表现层。所有 UI 都由 Phaser 画在 canvas 内，不依赖 DOM 文本层。
+  经典2D.js      宿主层，负责接管判定、存档、DOM 面板。
+  主程序.js      内核，状态 / 存档 / 回合制界面。
+  主样式.css     DOM 层样式。
+
+PC 显示正常，只有移动端（手机 / 平板）有问题。
+
+
+三、问题现象
+
+1. 手机上整个战斗画面有轻微发糊，文字边缘不锐利。
+2. 用「自定义按键 / 布局编辑器」缩放任一面板或按钮时：
+   缩小 -> 面板里的文字糊成一团，看不清。
+   放大 -> 文字像打了马赛克。
+3. PC 上同样操作没有问题。
+
+
+四、根因分析
+
+根因 A：画布没有按 DPR 渲染
+
+战斗2D.js 底部 createGame 里这样建游戏：
+
+    return new Phaser.Game({
+      type: renderType,
+      parent: container,
+      width: 960,
+      height: 540,
+      backgroundColor: '#07070f',
+      scale: { mode: Phaser.Scale.RESIZE, autoCenter: Phaser.Scale.NO_CENTER },
+      physics: { default: 'arcade', arcade: { gravity: { y: GRAVITY }, debug: false } },
+      render: renderConfig(minimal),
+      audio: { noAudio: true },
+      scene: [BattleScene]
+    });
+
+问题点：
+
+  - 没有设置 resolution，也没有在启动后按 window.devicePixelRatio
+    调整 canvas 的物理尺寸。
+  - scale.mode = RESIZE 下 Phaser 按 CSS 像素写 canvas.width，
+    DPR >= 2 的手机上等于被浏览器放大 2 倍显示，必然糊。
+  - renderConfig(minimal) 里 pixelArt: true、antialias: false，
+    对文字更不友好。
+
+根因 B：面板缩放走的是 setScale 位图拉伸
+
+战斗2D.js 的 applyCustomLayout 里：
+
+    u.style.forEach(function (o) {
+      if (!o || !o.setScale) return;
+      if (s !== prev.s) {
+        o.setScale(s);
+        sharpenScaledText(o, s);
+      }
+      ...
+    });
+
+问题点：
+
+  - 普通显示对象（Graphics / Container / Image / Sprite）直接 setScale(s)，
+    是把已经光栅化好的纹理拉伸，必然糊。
+  - 只有 type === 'Text' 的对象会被 sharpenScaledText 通过 setResolution
+    重新栅格化。
+  - 走 applyButtonStyle 的按钮是「改数据尺寸（baseH × s）再 paintButton 重绘」，
+    按钮本身不糊。这是本项目里已经存在的正确参照，把面板缩放往它靠即可。
+  - 环境 / 诅咒面板、属性面板、遗物条、目标敌人面板等 Container 内部子对象，
+    缩放时走的也是 setScale。
+
+辅助函数现状：
+
+    function sharpenScaledText(o, s) {
+      if (!o || o.type !== 'Text' || typeof o.setResolution !== 'function') return;
+      var dpr = (typeof global.devicePixelRatio === 'number' && global.devicePixelRatio > 0)
+        ? global.devicePixelRatio : 1;
+      var res = Math.max(1, Math.min(4, s * dpr));
+      res = Math.round(res * 4) / 4;
+      if (o._layoutRes === res) return;
+      o._layoutRes = res;
+      try { o.setResolution(res); } catch (e) { /* 忽略 */ }
+    }
+
+问题点：
+
+  - 只覆盖 Text，不覆盖 Graphics / Container / Image。
+  - Graphics 没有 setResolution，重采样也解决不了它。
+    需要的是按目标尺寸重绘。
+
+
+五、修复目标
+
+P0：让画布本身按 devicePixelRatio 渲染
+
+  - 在 createGame 里给 Phaser 传 resolution: window.devicePixelRatio || 1。
+  - 或者：启动后按 window.devicePixelRatio 手动调整 game.canvas.width / height
+    与 scale 映射，保证 canvas 物理像素 = CSS 像素 × DPR。
+  - 检查 scale.mode = RESIZE 下的 resize 路径：
+    窗口变化 / 方向变化 / visualViewport 变化时，DPR 要重新读取并同步到 canvas。
+  - 评估 pixelArt: true / antialias: false 对 UI 文字的影响。
+    拆不开就至少保证 UI 层文字锐利。
+
+P1：把「缩放面板」从 setScale 改为按目标尺寸重绘
+
+对以下对象，禁止用 setScale 缩放，改为按新的逻辑尺寸重新绘制：
+
+  - Graphics：清空后按新尺寸重画圆角、描边、文字底衬。
+  - Container：容器缩放会连带子对象被拉伸，正确做法是遍历子对象分别调整尺寸 / 字号。
+  - Image / Sprite：优先 setDisplaySize(w, h)，或换用足够高分辨率的新纹理。
+  - Text：保留现有 setResolution 路径，但把 s * dpr 的量化粒度
+    从 0.25 收紧到 0.1 或 0.05，减少「看起来还是差一点」的观感。
+
+正确参照：applyButtonStyle 是「改数据尺寸（baseH / baseW × s）再 paintButton 重绘」，
+按钮缩放后文字清晰。把面板 / 属性条 / 环境面板 / 遗物条都往这个模式靠。
+
+P2：顺带确认遗物条的「属性明细」入口
+
+手机横屏下 statPanelMetrics 会自动收起属性面板，玩家看攻击 / 暴击 / 闪避这些数值
+只能通过遗物条的「属性明细」进。这不算 bug，但既然在改缩放逻辑，
+顺便确认这个入口在任何缩放比例下都清晰可点。
+
+
+六、修复约束（不要违反）
+
+1. 不要引入新的渲染器。继续用 Phaser 3，不要把 UI 改成 DOM 覆盖层。
+   这个项目从一开始就是「UI 全部画在 canvas 内」，改架构的收益远低于风险。
+
+2. 不要动 renderConfig(minimal) 的四段式降级逻辑
+   （WebGL -> Canvas -> 极简 WebGL -> 极简 Canvas）。
+   这是苹果设备上「探测得到 WebGL、真建 context 却失败」的兜底，
+   删了会让一部分玩家进不去 2D。
+
+3. 不要修改 applyCustomLayout 的重入保护与 _appliedOffset / _appliedStyle 记录机制。
+
+4. 不要动 DOM 层（主样式.css、主程序.js 里的 DOM 渲染）。问题在 canvas 内。
+
+5. 不要改布局编辑器（Trial2DLayoutBar）的交互：拖动、吸附、滑杆、导入导出都不动。
+
+6. 改动要可回滚。按 P0 -> P1 -> P2 分三次提交，每次只改一类问题。
+
+7. 不要新增依赖，不要动 vendor/phaser.min.js。
+
+
+七、验收标准
+
+在 Android Chrome 与 iOS Safari 上分别验证：
+
+1. 手机 DPR = 2 与 DPR = 3 时，战斗画面的文字边缘清晰，无可见模糊。
+
+2. 打开布局编辑器，把任意面板缩放到 50%：
+   面板内的文字仍然清晰可读。
+   圆角、描边没有出现锯齿或断裂。
+
+3. 把同一面板放大到 200%：
+   文字不出现马赛克。
+   面板内的图标不出现明显像素块。
+
+4. 恢复到 100% 后，与原状态视觉一致（不能因为这次改动让默认布局变糊）。
+
+5. 属性面板、环境 / 诅咒面板、遗物条、目标敌人面板，四个面板各测一遍。
+
+6. PC 上重新跑一遍，确认没有回归。
+
+
+八、执行步骤（按顺序做）
+
+1. 先定位：把 createGame、renderConfig、applyCustomLayout、applyButtonStyle、
+   sharpenScaledText 这几个函数的当前代码贴出来，确认理解一致。
+
+2. 先给方案：说明打算怎么改 P0、P1，每处改动影响哪些面板，预计风险点在哪。
+
+3. 等确认再动手：不要一次改完直接给 diff，先给方案。
+
+4. 每完成一步，给出：改动的文件 + 函数、为什么这么改、怎么在手机上验证、回滚方式。
+
+
+九、信息补充
+
+如果以上信息不足以定位，请直接告诉我还需要什么，不要猜。我可以提供：
+
+  - 任意面板的截图（PC / 手机各一张）
+  - 手机型号、浏览器版本、DPR
+  - 任意函数的完整代码

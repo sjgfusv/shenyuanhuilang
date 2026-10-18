@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>遗物图标预览 · 深渊回廊 2.8.1</title>
+<style>
+  body { margin:0; padding:24px; background:#0b0e18; color:#c8cede;
+         font-family:"Microsoft YaHei","Segoe UI",system-ui,sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; color:#efe8ff; letter-spacing:2px; }
+  .sub { color:#6b7385; font-size:12px; margin-bottom:18px; }
+  .school { margin:22px 0 8px; font-size:13px; font-weight:bold; letter-spacing:2px; }
+  .grid { display:flex; flex-wrap:wrap; gap:18px; }
+  .cell { width:104px; text-align:center; }
+  .cell canvas { display:block; margin:0 auto; image-rendering:pixelated;
+                 background:#12141f; border-radius:8px; }
+  .name { font-size:12px; color:#e6e9f0; margin-top:7px; }
+  .meta { font-size:10px; color:#6b7385; margin-top:2px; }
+  .desc { font-size:10px; color:#8b93a6; margin-top:5px; line-height:1.5; }
+  .legend { margin-top:26px; padding-top:14px; border-top:1px solid #1e2434;
+            font-size:11px; color:#8b93a6; line-height:1.9; }
+</style>
+</head>
+<body>
+<h1>遗物图标 · 26 件</h1>
+<div class="sub">同一份绘制代码（战斗2D.js），放大 8 倍；游戏内以 17px 显示，色环载流派、白色符号载效果。</div>
+<div id="root"></div>
+<div class="legend" id="legend"></div>
+<script>
+// ===== 从 战斗2D.js 抠出来的真实代码（保持原样，勿改）=====
+var SCHOOL_COLOR = {
+    blood:   0xff5a7a,   // 血怒：残血换输出
+    perfect: 0xf0d06a,   // 完美：判定窗口与判定收益
+    link:    0x73f0b4,   // 连携：新资源（攒 → 选 → 险）
+    greed:   0xb07ae0,   // 贪婪：收益换风险
+    '':      0x8f97ad    // 通用
+  };
+var SCHOOL_LABEL = { blood: '血怒', perfect: '完美', link: '连携', greed: '贪婪', '': '通用' };
+  /** 流派色转 CSS 色串（文字用 —— Phaser 的 Text 只吃字符串色） */
+  function schoolCss(school) {
+    return '#' + ('000000' + (SCHOOL_COLOR[school] || SCHOOL_COLOR['']).toString(16)).slice(-6);
+  }
+
+  /**
+   * 遗物符号绘制上下文
+   * ------------------------------------------------------------
+   * 符号一律画在**中心坐标系**里（0,0 = 圆心，半径约 6.9 给人眼留白）。
+   * 直接写 16×16 绝对坐标的话，每改一次环的粗细就要把所有符号重算一遍。
+   *   move/line：抬笔 / 画线（不含落笔，连续调用即折线）
+   *   ring/arc ：整圆 / 弧
+   *   dot      ：实心圆点
+   *   tri      ：实心三角
+   *   w        ：改笔画粗细（主笔 1.7，细节 1.15 —— 副笔太粗会在 16px 里糊成一团）
+   */
+  function relicPen(g) {
+    // 当前笔宽自己记一份：dot/tri 会把 lineStyle 换成填充色，填完必须还回来 ——
+    // 否则「先点一个点、再描一条线」的符号里，那条线会用填充残留的状态画出来
+    var lw = 1.7;
+    var api = {
+      w: function (n) { lw = (n == null ? 1.7 : n); g.lineStyle(lw, 0xffffff, 1); return api; },
+      move: function (x, y) { g.beginPath(); g.moveTo(8 + x, 8 + y); return api; },
+      line: function (x, y) { g.lineTo(8 + x, 8 + y); g.strokePath(); return api; },
+      // 折线一气呵成（只描一次边）：line 连打会在每个转折点留下加粗的接头
+      poly: function (pts, close) {
+        g.beginPath();
+        for (var i = 0; i < pts.length; i++) {
+          if (i === 0) g.moveTo(8 + pts[i][0], 8 + pts[i][1]);
+          else g.lineTo(8 + pts[i][0], 8 + pts[i][1]);
+        }
+        if (close) g.closePath();
+        g.strokePath();
+        return api;
+      },
+      ring: function (r, a0, a1) { g.beginPath(); g.arc(8, 8, r, a0, a1, false); g.strokePath(); return api; },
+      dot: function (x, y, r) {
+        g.fillStyle(0xffffff, 1);
+        g.fillCircle(8 + x, 8 + y, r == null ? 1.2 : r);
+        g.lineStyle(lw, 0xffffff, 1);   // 还笔：见 lw 的说明
+        return api;
+      },
+      tri: function (x1, y1, x2, y2, x3, y3) {
+        g.fillStyle(0xffffff, 1);
+        g.fillTriangle(8 + x1, 8 + y1, 8 + x2, 8 + y2, 8 + x3, 8 + y3);
+        g.lineStyle(lw, 0xffffff, 1);   // 还笔
+        return api;
+      }
+    };
+    return api;
+  }
+
+  /**
+   * 26 件遗物的符号 + 静态定义
+   * ------------------------------------------------------------
+   * ⚠️ label / quality / school / desc 与 经典2D.js 的 RELIC_POOL **逐字同源**。
+   *    遗物详情的文案与图鉴说的是同一件事（改数值不会让界面说谎）。
+   *    这里留一份只读副本的原因：宿主 setRelics() 只下发 id 列表，
+   *    画布内拿不到 label 与 desc —— 而详情卡片恰恰只显示这两样。
+   *    副本一旦与 RELIC_POOL 不同步，遗物条就会显示错名字，
+   *    所以下面这段的每个字段都必须照着 RELIC_POOL 抄，不要在这里另写文案。
+   *    （顺序无关，按 id 查表；新增遗物时两处一起加。）
+   */
+  var RELIC_VIS = {
+    // ===== 血怒流：主动掉血换输出 =====
+    desperateStrike: { label: '破釜沉舟', quality: 'rare', school: 'blood', desc: '每损失 10% 生命，伤害 +7%（残血最多 +56%）· 与血之饥渴、荆棘之心成套',
+      // 破盾：**盾牌轮廓本身保留完整**，只在中线切一道锯齿裂痕 ——
+      // 试过"真的把轮廓也撕开"，结果盾牌在 16px 下认不出来了。
+      // 可辨识优先于字面准确：先看得出是盾，再看出它裂了。
+      draw: function (p) { p.w(1.7).poly([[-5.2, -3.0], [-5.2, 1.2], [0, 5.6], [5.2, 1.2], [5.2, -3.0], [0, -6.0]], true); p.w(1.15).poly([[0, -6.0], [-1.8, -2.2], [1.8, 0.4], [-1.8, 3.0], [0, 5.6]], false); }},
+    bloodThirst: { label: '血之饥渴', quality: 'rare', school: 'blood', desc: '吸血等级 +1；生命 ≤50% 时吸血翻倍',
+      draw: function (p) { p.w(1.7).poly([[0, -6.2], [3.6, 0.2], [3.6, 1.8]], false); p.move(0, -6.2).line(-3.6, 0.2); p.poly([[-3.6, 0.2], [-3.6, 2.0]], false); p.ring(2.5, 0.16, Math.PI - 0.16); p.w(1.15).dot(0, 1.3, 1.35); }},
+    thornHeart: { label: '荆棘之心', quality: 'rare', school: 'blood', desc: '被命中反弹 +3；生命 ≤50% 时反伤翻倍',
+      draw: function (p) { p.w(1.7).ring(4.7, 0, Math.PI * 2); for (var i = 0; i < 8; i++) { var a = i * Math.PI / 4 + Math.PI / 8; p.move(Math.cos(a) * 4.7, Math.sin(a) * 4.7).line(Math.cos(a) * 6.9, Math.sin(a) * 6.9); } p.w(1.15).dot(0, 0, 1.9); }},
+    furyBlood: { label: '狂热之血', quality: 'common', school: 'blood', desc: '狂怒获取 +35%；生命 ≤50% 时再 +35%',
+      draw: function (p) { p.w(1.7).ring(5.0, Math.PI * 0.72, Math.PI * 2.28); p.poly([[0, -1.0], [3.2, -5.4], [3.6, 0.2]], true); p.w(1.15).move(-3.2, 4.6).line(3.2, 4.6); }},
+    immortalTotem: { label: '不朽图腾', quality: 'legendary', school: 'blood', desc: '致命伤保留 1 血（每层一次）· 敢残血作战的前提',
+      draw: function (p) { p.w(1.7).poly([[-3.2, -6.0], [3.2, -6.0], [4.8, 3.4], [-4.8, 3.4]], true); p.w(1.15).move(-2.0, -1.4).line(2.0, -1.4); p.move(-2.4, 0.8).line(2.4, 0.8); p.move(-5.8, 5.4).line(5.8, 5.4); }},
+    soulDrinker: { label: '汲魂者', quality: 'common', school: 'blood', desc: '击杀回复 2 生命；生命 ≤50% 时回复 4',
+      // 击杀回血：用「被吸上来的一缕魂」而不是第二颗血滴 ——
+      // 血滴已经给了「血之饥渴」，两件遗物同一个符号在条上就分不出来了
+      draw: function (p) { p.w(1.7).poly([[-4.4, 6.0], [-4.4, 2.0], [-1.6, -1.0], [1.6, -3.6], [4.4, -5.4]], false); p.w(1.15).poly([[-1.4, 6.0], [-1.4, 3.0], [0.6, 0.6], [3.0, -1.4]], false); p.move(3.2, -2.6).line(4.6, -4.0); }},
+
+    // ===== 完美流：判定窗口与判定收益 =====
+    perfectInstinct: { label: '完美直觉', quality: 'rare', school: 'perfect', desc: '完美闪避窗口 +80ms，锐利持续 +2s',
+      draw: function (p) { p.w(1.7).ring(5.4, 0, Math.PI * 2); p.w(1.15).ring(2.2, 0, Math.PI * 2); p.dot(0, 0, 1.25); p.w(1.7).move(-6.9, 0).line(-5.6, 0); p.move(6.9, 0).line(5.6, 0); p.move(0, -6.9).line(0, -5.6); p.move(0, 6.9).line(0, 5.6); }},
+    ironWall: { label: '铁壁', quality: 'common', school: 'perfect', desc: '完美格挡窗口 +80ms',
+      draw: function (p) { p.w(1.7).poly([[-5.4, -4.2], [5.4, -4.2], [5.4, 1.0], [0, 5.8], [-5.4, 1.0]], true); p.w(1.15).move(-5.4, -0.8).line(5.4, -0.8); p.move(-1.8, -3.4).line(-1.8, -1.6); p.move(1.8, -3.4).line(1.8, -1.6); p.move(-3.4, 1.6).line(-3.4, 3.0); }},
+    counterBlade: { label: '反击之刃', quality: 'rare', school: 'perfect', desc: '盾反伤害 ×2 → ×3，盾反回 3 护盾',
+      draw: function (p) { p.w(1.7).poly([[-5.0, 5.0], [2.2, -2.2], [4.6, -4.6]], false); p.w(1.15).move(-5.0, 5.0).line(-2.6, 4.0); p.move(-5.0, 5.0).line(-4.0, 2.6); p.w(1.7).poly([[1.0, -4.6], [4.6, -4.6], [4.6, -1.0]], false); }},
+    sharpCore: { label: '锐利核心', quality: 'legendary', school: 'perfect', desc: '完美闪避的锐利倍率 2.2 → 3.0',
+      draw: function (p) { p.w(1.7).poly([[0, -6.4], [1.9, -1.9], [6.4, 0], [1.9, 1.9], [0, 6.4], [-1.9, 1.9], [-6.4, 0], [-1.9, -1.9]], true); p.w(1.15).dot(0, 0, 1.2); }},
+    windShadow: { label: '疾风残影', quality: 'rare', school: 'perfect', desc: '闪避无敌帧 +120ms，冲刺距离 +15%',
+      draw: function (p) { p.w(1.7).ring(4.6, -Math.PI * 0.42, Math.PI * 0.42); p.poly([[-1.4, -2.8], [3.0, 0], [-1.4, 2.8]], true); p.w(1.15).ring(6.6, -Math.PI * 0.30, Math.PI * 0.30); }},
+
+    // ===== 连携流：新资源的三个旋钮 =====
+    linkHeart: { label: '连携之心', quality: 'rare', school: 'link', desc: '连携上限 3 → 5，能一口气攒更多',
+      draw: function (p) { p.w(1.7).poly([[0, -6.4], [3.0, -3.2], [0, 0], [-3.0, -3.2]], true); p.poly([[0, 0], [3.0, 3.2], [0, 6.4], [-3.0, 3.2]], true); p.w(1.15).dot(0, 0, 1.05); }},
+    unbroken: { label: '不屈意志', quality: 'legendary', school: 'link', desc: '挨打时连携只 −1 而非清零 · 与连携之心成套',
+      draw: function (p) { p.w(1.7).poly([[-2.2, -6.4], [1.8, -2.0], [-1.2, 1.2], [2.2, 6.4]], false); p.w(1.15).poly([[-4.8, -6.4], [-4.8, -2.4], [-3.0, -0.6]], false); p.poly([[4.8, 6.4], [4.8, 2.4], [3.0, 0.6]], false); }},
+    echoMaster: { label: '回响精通', quality: 'rare', school: 'link', desc: '连携招式倍率 1.6 → 2.2',
+      draw: function (p) { p.w(1.15).dot(-4.2, 0, 1.3); p.w(1.7).ring(2.8, -Math.PI * 0.58, Math.PI * 0.58); p.ring(5.4, -Math.PI * 0.52, Math.PI * 0.52); }},
+    executioner: { label: '处决者', quality: 'rare', school: 'link', desc: '斩杀线 +10%；斩杀成功回 1 连携',
+      draw: function (p) { p.w(1.7).poly([[-4.8, 6.2], [3.0, 0.6]], false); p.move(-2.6, 2.6).line(-0.4, 4.4); p.w(1.15).ring(4.0, -2.5, -0.6); p.w(1.7).move(5.2, -6.2).line(5.2, -3.4); }},
+    heavyStrike: { label: '重击', quality: 'common', school: 'link', desc: '跳劈 +0.4 倍、埋人 +12%；跳劈消耗连携时倍率再 +0.6',
+      draw: function (p) { p.w(1.7).poly([[1.0, -6.4], [5.0, -3.0], [1.0, 0.4]], true); p.move(1.0, -3.0).line(-2.4, 0.6); p.w(1.15).move(-4.4, 2.2).line(-1.0, 2.2); p.move(-5.4, 4.4).line(0.6, 4.4); p.w(1.7).dot(3.6, 3.6, 1.5); }},
+
+    // ===== 贪婪流：收益换风险 =====
+    greedyHeart: { label: '贪婪之心', quality: 'rare', school: 'greed', desc: '金币获取 +60%；受到的伤害 +20%',
+      draw: function (p) { p.w(1.7).ring(5.4, 0, Math.PI * 2); p.w(1.15).ring(3.1, 0, Math.PI * 2); p.w(1.7).dot(0, 0, 1.4); }},
+    merchantEye: { label: '商人眼光', quality: 'common', school: 'greed', desc: '商店价格 −25%',
+      draw: function (p) { p.w(1.7).poly([[-6.4, 0], [-3.4, -3.0], [3.4, -3.0], [6.4, 0], [3.4, 3.0], [-3.4, 3.0]], true); p.w(1.15).ring(1.9, 0, Math.PI * 2); p.dot(0, 0, 0.95); }},
+    fateWheel: { label: '命运轮盘', quality: 'legendary', school: 'greed', desc: '每清一个房间随机 +2~8 金币 或 −1 生命',
+      draw: function (p) { p.w(1.7).ring(5.6, 0, Math.PI * 2); for (var i = 0; i < 6; i++) { var a = i * Math.PI / 3; p.move(Math.cos(a) * 2.2, Math.sin(a) * 2.2).line(Math.cos(a) * 5.6, Math.sin(a) * 5.6); } p.w(1.15).ring(2.2, 0, Math.PI * 2); }},
+
+    // ===== 通用：不参与成套，用中性灰 =====
+    lightBoots: { label: '轻盈之靴', quality: 'common', school: '', desc: '体力上限 +30，停手回复 +30%',
+      draw: function (p) { p.w(1.7).poly([[-5.6, -2.2], [0.0, -5.0], [5.6, -2.2], [0.0, 0.6]], true); p.w(1.15).poly([[-4.8, 0.6], [0.0, 3.4], [4.8, 0.6]], false); p.poly([[-3.6, 3.0], [0.0, 5.4], [3.6, 3.0]], false); }},
+    airFeather: { label: '滞空之羽', quality: 'rare', school: '', desc: '空中闪避保留的坠速更小，且不消耗体力',
+      draw: function (p) { p.w(1.7).poly([[3.0, 5.4], [3.6, -1.4], [0.0, -5.6], [-3.2, -1.6], [-2.6, 5.4]], true); p.w(1.15).dot(0.2, -2.8, 1.05); }},
+    shieldResonance: { label: '护盾共鸣', quality: 'common', school: '', desc: '任何来源获得的护盾 +2；完美格挡额外 +3',
+      draw: function (p) { p.w(1.7).poly([[0, -6.2], [4.2, -3.2], [4.2, 1.2], [0, 4.8], [-4.2, 1.2], [-4.2, -3.2]], true); p.w(1.15).ring(1.6, 0, Math.PI * 2); p.dot(0, 0, 1.05); }},
+    chainMaster: { label: '连击大师', quality: 'rare', school: '', desc: '连招窗口 +250ms，第 3 段横扫 +50%',
+      draw: function (p) { p.w(1.7).move(-5.8, 1.2).line(5.8, 1.2); p.w(1.15).move(-5.8, -3.6).line(2.2, -3.6); p.move(-5.8, 6.0).line(4.6, 6.0); }},
+    huntMark: { label: '猎杀标记', quality: 'legendary', school: '', desc: '斩杀线提升至 50%',
+      draw: function (p) { p.w(1.7).ring(4.6, 0, Math.PI * 2); p.move(-6.9, 0).line(-3.2, 0); p.move(6.9, 0).line(3.2, 0); p.move(0, -6.9).line(0, -3.2); p.move(0, 6.9).line(0, 3.2); p.w(1.15).dot(0, 0, 1.5); }},
+    trackingCharm: { label: '追踪符', quality: 'rare', school: '', desc: '远程普攻追踪 +50%，弹速 +10%',
+      // 追踪符：一道**指向的弧** + 箭头（弹道会拐弯去追目标）
+      draw: function (p) { p.w(1.7).ring(5.2, -Math.PI * 0.78, Math.PI * 0.78); p.tri(4.6, 0, 1.0, -2.2, 1.0, 2.2); p.w(1.15).dot(-1.6, 0, 1.15); }},
+    piercingArrow: { label: '穿透之矢', quality: 'rare', school: '', desc: '远程普攻穿透 +1',
+      draw: function (p) { p.w(1.7).move(-5.4, 0).line(3.6, 0); p.w(1.15).poly([[3.6, -3.0], [6.6, 0], [3.6, 3.0]], true); p.w(1.7).move(-5.4, -3.0).line(-2.0, 0); p.move(-5.4, 3.0).line(-2.0, 0); }},
+    abyssMark: { label: '深渊印记', quality: 'rare', school: '', desc: '遗物三选一变四选一',
+      draw: function (p) { p.w(1.7).dot(0, -4.4, 1.5); p.w(1.15).dot(-4.4, 2.6, 1.5); p.dot(4.4, 2.6, 1.5); p.w(1.7).ring(6.6, 0, Math.PI * 2); }}
+  };
+var RELIC_FALLBACK = {
+    label: '未知遗物', quality: 'common', school: '',
+    desc: '这件遗物不在图标表里 —— 请对照图鉴确认它的效果。',
+    draw: function (p) { p.w(1.7).ring(5.4, 0, Math.PI * 2); p.w(1.15).dot(0, -2.0, 1.2); p.move(0, 0.6).line(0, 4.0); }
+  };
+var RELIC_VIS = {
+    // ===== 血怒流：主动掉血换输出 =====
+    desperateStrike: { label: '破釜沉舟', quality: 'rare', school: 'blood', desc: '每损失 10% 生命，伤害 +7%（残血最多 +56%）· 与血之饥渴、荆棘之心成套',
+      // 破盾：**盾牌轮廓本身保留完整**，只在中线切一道锯齿裂痕 ——
+      // 试过"真的把轮廓也撕开"，结果盾牌在 16px 下认不出来了。
+      // 可辨识优先于字面准确：先看得出是盾，再看出它裂了。
+      draw: function (p) { p.w(1.7).poly([[-5.2, -3.0], [-5.2, 1.2], [0, 5.6], [5.2, 1.2], [5.2, -3.0], [0, -6.0]], true); p.w(1.15).poly([[0, -6.0], [-1.8, -2.2], [1.8, 0.4], [-1.8, 3.0], [0, 5.6]], false); }},
+    bloodThirst: { label: '血之饥渴', quality: 'rare', school: 'blood', desc: '吸血等级 +1；生命 ≤50% 时吸血翻倍',
+      draw: function (p) { p.w(1.7).poly([[0, -6.2], [3.6, 0.2], [3.6, 1.8]], false); p.move(0, -6.2).line(-3.6, 0.2); p.poly([[-3.6, 0.2], [-3.6, 2.0]], false); p.ring(2.5, 0.16, Math.PI - 0.16); p.w(1.15).dot(0, 1.3, 1.35); }},
+    thornHeart: { label: '荆棘之心', quality: 'rare', school: 'blood', desc: '被命中反弹 +3；生命 ≤50% 时反伤翻倍',
+      draw: function (p) { p.w(1.7).ring(4.7, 0, Math.PI * 2); for (var i = 0; i < 8; i++) { var a = i * Math.PI / 4 + Math.PI / 8; p.move(Math.cos(a) * 4.7, Math.sin(a) * 4.7).line(Math.cos(a) * 6.9, Math.sin(a) * 6.9); } p.w(1.15).dot(0, 0, 1.9); }},
+    furyBlood: { label: '狂热之血', quality: 'common', school: 'blood', desc: '狂怒获取 +35%；生命 ≤50% 时再 +35%',
+      draw: function (p) { p.w(1.7).ring(5.0, Math.PI * 0.72, Math.PI * 2.28); p.poly([[0, -1.0], [3.2, -5.4], [3.6, 0.2]], true); p.w(1.15).move(-3.2, 4.6).line(3.2, 4.6); }},
+    immortalTotem: { label: '不朽图腾', quality: 'legendary', school: 'blood', desc: '致命伤保留 1 血（每层一次）· 敢残血作战的前提',
+      draw: function (p) { p.w(1.7).poly([[-3.2, -6.0], [3.2, -6.0], [4.8, 3.4], [-4.8, 3.4]], true); p.w(1.15).move(-2.0, -1.4).line(2.0, -1.4); p.move(-2.4, 0.8).line(2.4, 0.8); p.move(-5.8, 5.4).line(5.8, 5.4); }},
+    soulDrinker: { label: '汲魂者', quality: 'common', school: 'blood', desc: '击杀回复 2 生命；生命 ≤50% 时回复 4',
+      // 击杀回血：用「被吸上来的一缕魂」而不是第二颗血滴 ——
+      // 血滴已经给了「血之饥渴」，两件遗物同一个符号在条上就分不出来了
+      draw: function (p) { p.w(1.7).poly([[-4.4, 6.0], [-4.4, 2.0], [-1.6, -1.0], [1.6, -3.6], [4.4, -5.4]], false); p.w(1.15).poly([[-1.4, 6.0], [-1.4, 3.0], [0.6, 0.6], [3.0, -1.4]], false); p.move(3.2, -2.6).line(4.6, -4.0); }},
+
+    // ===== 完美流：判定窗口与判定收益 =====
+    perfectInstinct: { label: '完美直觉', quality: 'rare', school: 'perfect', desc: '完美闪避窗口 +80ms，锐利持续 +2s',
+      draw: function (p) { p.w(1.7).ring(5.4, 0, Math.PI * 2); p.w(1.15).ring(2.2, 0, Math.PI * 2); p.dot(0, 0, 1.25); p.w(1.7).move(-6.9, 0).line(-5.6, 0); p.move(6.9, 0).line(5.6, 0); p.move(0, -6.9).line(0, -5.6); p.move(0, 6.9).line(0, 5.6); }},
+    ironWall: { label: '铁壁', quality: 'common', school: 'perfect', desc: '完美格挡窗口 +80ms',
+      draw: function (p) { p.w(1.7).poly([[-5.4, -4.2], [5.4, -4.2], [5.4, 1.0], [0, 5.8], [-5.4, 1.0]], true); p.w(1.15).move(-5.4, -0.8).line(5.4, -0.8); p.move(-1.8, -3.4).line(-1.8, -1.6); p.move(1.8, -3.4).line(1.8, -1.6); p.move(-3.4, 1.6).line(-3.4, 3.0); }},
+    counterBlade: { label: '反击之刃', quality: 'rare', school: 'perfect', desc: '盾反伤害 ×2 → ×3，盾反回 3 护盾',
+      draw: function (p) { p.w(1.7).poly([[-5.0, 5.0], [2.2, -2.2], [4.6, -4.6]], false); p.w(1.15).move(-5.0, 5.0).line(-2.6, 4.0); p.move(-5.0, 5.0).line(-4.0, 2.6); p.w(1.7).poly([[1.0, -4.6], [4.6, -4.6], [4.6, -1.0]], false); }},
+    sharpCore: { label: '锐利核心', quality: 'legendary', school: 'perfect', desc: '完美闪避的锐利倍率 2.2 → 3.0',
+      draw: function (p) { p.w(1.7).poly([[0, -6.4], [1.9, -1.9], [6.4, 0], [1.9, 1.9], [0, 6.4], [-1.9, 1.9], [-6.4, 0], [-1.9, -1.9]], true); p.w(1.15).dot(0, 0, 1.2); }},
+    windShadow: { label: '疾风残影', quality: 'rare', school: 'perfect', desc: '闪避无敌帧 +120ms，冲刺距离 +15%',
+      draw: function (p) { p.w(1.7).ring(4.6, -Math.PI * 0.42, Math.PI * 0.42); p.poly([[-1.4, -2.8], [3.0, 0], [-1.4, 2.8]], true); p.w(1.15).ring(6.6, -Math.PI * 0.30, Math.PI * 0.30); }},
+
+    // ===== 连携流：新资源的三个旋钮 =====
+    linkHeart: { label: '连携之心', quality: 'rare', school: 'link', desc: '连携上限 3 → 5，能一口气攒更多',
+      draw: function (p) { p.w(1.7).poly([[0, -6.4], [3.0, -3.2], [0, 0], [-3.0, -3.2]], true); p.poly([[0, 0], [3.0, 3.2], [0, 6.4], [-3.0, 3.2]], true); p.w(1.15).dot(0, 0, 1.05); }},
+    unbroken: { label: '不屈意志', quality: 'legendary', school: 'link', desc: '挨打时连携只 −1 而非清零 · 与连携之心成套',
+      draw: function (p) { p.w(1.7).poly([[-2.2, -6.4], [1.8, -2.0], [-1.2, 1.2], [2.2, 6.4]], false); p.w(1.15).poly([[-4.8, -6.4], [-4.8, -2.4], [-3.0, -0.6]], false); p.poly([[4.8, 6.4], [4.8, 2.4], [3.0, 0.6]], false); }},
+    echoMaster: { label: '回响精通', quality: 'rare', school: 'link', desc: '连携招式倍率 1.6 → 2.2',
+      draw: function (p) { p.w(1.15).dot(-4.2, 0, 1.3); p.w(1.7).ring(2.8, -Math.PI * 0.58, Math.PI * 0.58); p.ring(5.4, -Math.PI * 0.52, Math.PI * 0.52); }},
+    executioner: { label: '处决者', quality: 'rare', school: 'link', desc: '斩杀线 +10%；斩杀成功回 1 连携',
+      draw: function (p) { p.w(1.7).poly([[-4.8, 6.2], [3.0, 0.6]], false); p.move(-2.6, 2.6).line(-0.4, 4.4); p.w(1.15).ring(4.0, -2.5, -0.6); p.w(1.7).move(5.2, -6.2).line(5.2, -3.4); }},
+    heavyStrike: { label: '重击', quality: 'common', school: 'link', desc: '跳劈 +0.4 倍、埋人 +12%；跳劈消耗连携时倍率再 +0.6',
+      draw: function (p) { p.w(1.7).poly([[1.0, -6.4], [5.0, -3.0], [1.0, 0.4]], true); p.move(1.0, -3.0).line(-2.4, 0.6); p.w(1.15).move(-4.4, 2.2).line(-1.0, 2.2); p.move(-5.4, 4.4).line(0.6, 4.4); p.w(1.7).dot(3.6, 3.6, 1.5); }},
+
+    // ===== 贪婪流：收益换风险 =====
+    greedyHeart: { label: '贪婪之心', quality: 'rare', school: 'greed', desc: '金币获取 +60%；受到的伤害 +20%',
+      draw: function (p) { p.w(1.7).ring(5.4, 0, Math.PI * 2); p.w(1.15).ring(3.1, 0, Math.PI * 2); p.w(1.7).dot(0, 0, 1.4); }},
+    merchantEye: { label: '商人眼光', quality: 'common', school: 'greed', desc: '商店价格 −25%',
+      draw: function (p) { p.w(1.7).poly([[-6.4, 0], [-3.4, -3.0], [3.4, -3.0], [6.4, 0], [3.4, 3.0], [-3.4, 3.0]], true); p.w(1.15).ring(1.9, 0, Math.PI * 2); p.dot(0, 0, 0.95); }},
+    fateWheel: { label: '命运轮盘', quality: 'legendary', school: 'greed', desc: '每清一个房间随机 +2~8 金币 或 −1 生命',
+      draw: function (p) { p.w(1.7).ring(5.6, 0, Math.PI * 2); for (var i = 0; i < 6; i++) { var a = i * Math.PI / 3; p.move(Math.cos(a) * 2.2, Math.sin(a) * 2.2).line(Math.cos(a) * 5.6, Math.sin(a) * 5.6); } p.w(1.15).ring(2.2, 0, Math.PI * 2); }},
+
+    // ===== 通用：不参与成套，用中性灰 =====
+    lightBoots: { label: '轻盈之靴', quality: 'common', school: '', desc: '体力上限 +30，停手回复 +30%',
+      draw: function (p) { p.w(1.7).poly([[-5.6, -2.2], [0.0, -5.0], [5.6, -2.2], [0.0, 0.6]], true); p.w(1.15).poly([[-4.8, 0.6], [0.0, 3.4], [4.8, 0.6]], false); p.poly([[-3.6, 3.0], [0.0, 5.4], [3.6, 3.0]], false); }},
+    airFeather: { label: '滞空之羽', quality: 'rare', school: '', desc: '空中闪避保留的坠速更小，且不消耗体力',
+      draw: function (p) { p.w(1.7).poly([[3.0, 5.4], [3.6, -1.4], [0.0, -5.6], [-3.2, -1.6], [-2.6, 5.4]], true); p.w(1.15).dot(0.2, -2.8, 1.05); }},
+    shieldResonance: { label: '护盾共鸣', quality: 'common', school: '', desc: '任何来源获得的护盾 +2；完美格挡额外 +3',
+      draw: function (p) { p.w(1.7).poly([[0, -6.2], [4.2, -3.2], [4.2, 1.2], [0, 4.8], [-4.2, 1.2], [-4.2, -3.2]], true); p.w(1.15).ring(1.6, 0, Math.PI * 2); p.dot(0, 0, 1.05); }},
+    chainMaster: { label: '连击大师', quality: 'rare', school: '', desc: '连招窗口 +250ms，第 3 段横扫 +50%',
+      draw: function (p) { p.w(1.7).move(-5.8, 1.2).line(5.8, 1.2); p.w(1.15).move(-5.8, -3.6).line(2.2, -3.6); p.move(-5.8, 6.0).line(4.6, 6.0); }},
+    huntMark: { label: '猎杀标记', quality: 'legendary', school: '', desc: '斩杀线提升至 50%',
+      draw: function (p) { p.w(1.7).ring(4.6, 0, Math.PI * 2); p.move(-6.9, 0).line(-3.2, 0); p.move(6.9, 0).line(3.2, 0); p.move(0, -6.9).line(0, -3.2); p.move(0, 6.9).line(0, 3.2); p.w(1.15).dot(0, 0, 1.5); }},
+    trackingCharm: { label: '追踪符', quality: 'rare', school: '', desc: '远程普攻追踪 +50%，弹速 +10%',
+      // 追踪符：一道**指向的弧** + 箭头（弹道会拐弯去追目标）
+      draw: function (p) { p.w(1.7).ring(5.2, -Math.PI * 0.78, Math.PI * 0.78); p.tri(4.6, 0, 1.0, -2.2, 1.0, 2.2); p.w(1.15).dot(-1.6, 0, 1.15); }},
+    piercingArrow: { label: '穿透之矢', quality: 'rare', school: '', desc: '远程普攻穿透 +1',
+      draw: function (p) { p.w(1.7).move(-5.4, 0).line(3.6, 0); p.w(1.15).poly([[3.6, -3.0], [6.6, 0], [3.6, 3.0]], true); p.w(1.7).move(-5.4, -3.0).line(-2.0, 0); p.move(-5.4, 3.0).line(-2.0, 0); }},
+    abyssMark: { label: '深渊印记', quality: 'rare', school: '', desc: '遗物三选一变四选一',
+      draw: function (p) { p.w(1.7).dot(0, -4.4, 1.5); p.w(1.15).dot(-4.4, 2.6, 1.5); p.dot(4.4, 2.6, 1.5); p.w(1.7).ring(6.6, 0, Math.PI * 2); }}
+  };
+
+// ===== 极简 Phaser Graphics 替身 =====
+// 只需要还原 generateTexture 的行为：把绘制指令光栅化到一张 16×16 的 canvas。
+// 这样预览页不依赖 Phaser，也不会因为版本差异画出不一样的东西。
+function makeFakeScene() {
+  var textures = {};
+  return {
+    textures: {
+      exists: function (k) { return !!textures[k]; },
+      addCanvas: function (k, w, h) { textures[k] = { w: w, h: h }; return textures[k]; }
+    },
+    _textures: textures
+  };
+}
+// 用 Canvas2D 实现 Graphics 的那几个方法（relicPen 只用到这些）
+function fakeGraphics(ctx) {
+  var lw = 1.7, stroke = '#fff', fill = '#fff';
+  var api = {
+    clear: function () { ctx.clearRect(0, 0, 16, 16); return api; },
+    lineStyle: function (w, c, a) { lw = w; stroke = 'rgba(255,255,255,' + (a == null ? 1 : a) + ')'; return api; },
+    fillStyle: function (c, a) { fill = c === 0xffffff ? 'rgba(255,255,255,' + (a == null ? 1 : a) + ')' : 'rgba(0,0,0,1)'; return api; },
+    beginPath: function () { ctx.beginPath(); return api; },
+    moveTo: function (x, y) { ctx.moveTo(x, y); return api; },
+    lineTo: function (x, y) { ctx.lineTo(x, y); return api; },
+    closePath: function () { ctx.closePath(); return api; },
+    strokePath: function () { ctx.lineWidth = lw; ctx.strokeStyle = stroke; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke(); return api; },
+    arc: function (x, y, r, a0, a1) { ctx.arc(x, y, r, a0, a1); return api; },
+    fillCircle: function (x, y, r) { ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); return api; },
+    fillTriangle: function (x1, y1, x2, y2, x3, y3) {
+      ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineTo(x3, y3); ctx.closePath(); ctx.fill(); return api;
+    },
+    fillRoundedRect: function (x, y, w, h, r) {
+      ctx.fillStyle = fill; ctx.beginPath();
+      if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); } else { ctx.rect(x, y, w, h); }
+      ctx.fill(); return api;
+    },
+    strokeCircle: function (x, y, r) { ctx.lineWidth = lw; ctx.strokeStyle = stroke; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke(); return api; },
+    // 预览页自己实现：把当前 canvas 存成"纹理"
+    generateTexture: function (name) {
+      var out = document.createElement('canvas');
+      out.width = 16; out.height = 16;
+      out.getContext('2d').drawImage(ctx.canvas, 0, 0);
+      api._last = out;
+      scene._textures[name] = { img: out };
+      return api;
+    }
+  };
+  return api;
+}
+
+// ===== 渲染：用真实代码画出每一件 =====
+var scene = makeFakeScene();
+function drawOne(vis) {
+  var cv = document.createElement('canvas');
+  cv.width = 16; cv.height = 16;
+  var ctx = cv.getContext('2d');
+  var g = fakeGraphics(ctx);
+  // 与 ensureRelicTextures 内部逐行一致：先铺内圈流派色，再画符号，最后压色环
+  var tint = SCHOOL_COLOR[vis.school] || SCHOOL_COLOR[''];
+  var hex = '#' + ('000000' + tint.toString(16)).slice(-6);
+  ctx.fillStyle = hexToRgba(hex, 0.08);
+  ctx.beginPath(); ctx.arc(8, 8, 7.0, 0, Math.PI * 2); ctx.fill();
+  try { vis.draw(relicPen(g)); } catch (e) { console.warn('绘制失败', e); }
+  ctx.lineWidth = 1; ctx.strokeStyle = hexToRgba(hex, 0.92);
+  ctx.beginPath(); ctx.arc(8, 8, 7.0, 0, Math.PI * 2); ctx.stroke();
+  return cv;
+}
+function hexToRgba(hex, a) {
+  var n = parseInt(hex.slice(1), 16);
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+var root = document.getElementById('root');
+var bySchool = {};
+Object.keys(RELIC_VIS).forEach(function (id) {
+  var v = RELIC_VIS[id];
+  var s = v.school || '';
+  (bySchool[s] = bySchool[s] || []).push({ id: id, v: v });
+});
+var order = ['blood', 'perfect', 'link', 'greed', ''];
+var schoolName = { blood: '血怒流', perfect: '完美流', link: '连携流', greed: '贪婪流', '': '通用（不参与成套）' };
+order.forEach(function (s) {
+  if (!bySchool[s]) return;
+  var h = document.createElement('div');
+  h.className = 'school';
+  h.style.color = '#' + ('000000' + (SCHOOL_COLOR[s] || SCHOOL_COLOR['']).toString(16)).slice(-6);
+  h.textContent = schoolName[s] + ' · ' + bySchool[s].length + ' 件';
+  root.appendChild(h);
+  var grid = document.createElement('div');
+  grid.className = 'grid';
+  bySchool[s].forEach(function (it) {
+    var cell = document.createElement('div');
+    cell.className = 'cell';
+    var icon = drawOne(it.v);
+    icon.style.width = '64px'; icon.style.height = '64px';
+    cell.appendChild(icon);
+    var n = document.createElement('div'); n.className = 'name'; n.textContent = it.v.label;
+    var m = document.createElement('div'); m.className = 'meta'; m.textContent = it.id + ' · ' + it.v.quality;
+    var d = document.createElement('div'); d.className = 'desc'; d.textContent = it.v.desc;
+    cell.appendChild(n); cell.appendChild(m); cell.appendChild(d);
+    grid.appendChild(cell);
+  });
+  root.appendChild(grid);
+});
+document.getElementById('legend').innerHTML =
+  '<b>验收要点</b><br>' +
+  '· 每个符号在 16px 下是否一眼认得出（游戏里只有 17px）<br>' +
+  '· 色环是否清楚区分四流派（血怒玫红 / 完美金 / 连携绿 / 贪婪紫 / 通用灰）<br>' +
+  '· 符号笔画是否越出色环（越界会被色环压住，看起来像缺口）<br>' +
+  '· 26 个符号彼此是否够不同 —— 两个长得像的，玩家在条上就分不出来';
+</script>
+</body>
+</html>

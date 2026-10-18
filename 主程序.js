@@ -52,8 +52,12 @@ const DEFAULT_SETTINGS = {
   sfx: true,        // 游戏音效
   bgmVolume: 100,   // 背景音乐音量（1~200）
   sfxVolume: 100,   // 音效音量（1~200）
-  battleAnimation: true,   // 试炼战斗动画
-  animationSpeed: 'normal', // 动画速度: slow | normal | fast
+  // v2.8.1：删掉了 battleAnimation / animationSpeed 两个键。
+  //   它们只在 2.6 的 试炼程序.js 里被读过，而那份代码从 2.7 起就不再加载
+  //   （主界面.html 里已经没有任何地方引用它）—— 也就是说这两个开关在
+  //   设置面板里拨了**不会影响任何东西**。留着键只会让"设置能改变游戏"
+  //   这件事变得不可信，所以键与界面项一起删。
+  //   旧存档里存着的这两个值读进来也不会报错（loadSettings 只回填已知键）。
   fontSize: 'normal',       // 文字大小: small | normal | large
 };
 
@@ -300,7 +304,11 @@ function applySettings(settings) {
         enabled: true,
         particles: settings.trial2DParticles !== false,
         screenShake2D: settings.screenShake !== false,
-        floatText: settings.floatText !== false
+        floatText: settings.floatText !== false,
+        // HUD 密度：战斗画面上"常驻多少信息"由它决定（遗物条 / 属性面板是否显示）。
+        // 它属于 2D 引擎的设置域，而 SETTINGS_DEFS 住在主程序这边 ——
+        // 不显式转交的话，引擎那边永远是默认值，设置里切了也看不出变化。
+        hudDensity: settings.hudDensity || 'auto'
       });
     } catch (error) {
       console.warn('[试炼2D] 应用设置失败:', error);
@@ -329,10 +337,26 @@ const SETTINGS_DEFS = [
     { key: 'sfx',               label: '游戏音效', desc: '攻击、受伤、金币、按钮等反馈音效' },
     { key: 'bgmVolume',         label: '背景音乐音量', type: 'number', min: 1, max: 200 },
     { key: 'sfxVolume',         label: '音效音量', type: 'number', min: 1, max: 200 },
-    { key: 'battleAnimation',   label: '战斗动画', desc: '试炼模式攻击、受击、闪避等动画效果' },
     { key: 'trial2DParticles',  label: '2D粒子特效', desc: '实时战斗中的暴击、技能粒子与光效' },
-    { key: 'animationSpeed',    label: '动画速度', desc: '试炼战斗动画的播放速度', type: 'segmented', options: [['slow', '慢'], ['normal', '正常'], ['fast', '快']] },
     { key: 'fontSize',          label: '文字大小', desc: '界面文字整体缩放（小/标准/大）', type: 'segmented', options: [['small', '小'], ['normal', '标准'], ['large', '大']] },
+    // v2.8.1：战斗画面的信息密度。遗物栏与属性面板是否常驻由它决定 ——
+    // 「想看更多信息」和「要画面干净」是一对真实矛盾，交给玩家自己选，
+    // 而不是替他拍板。
+    //
+    // layout:'cards' —— 这一项不走「左文字右一排胶囊」的标准排版，理由见
+    //   主样式.css 的 .settings-item-cards：四档各档含义差得远，光给四个词
+    //   玩家选不出来，得把「每档常驻什么」写在选项里面；而四张卡片需要整行
+    //   宽度才排得开，塞进右半边只会让文字被压成两行、按钮那条窄带空得发慌。
+    // notes 里的文案与 战斗2D.js 的 applyHudDensity / relicStripWanted 实际
+    //   行为逐条对应，改行为时这里要一起改（否则设置界面会开始说谎）。
+    { key: 'hudDensity',        label: 'HUD 密度', desc: '战斗中常驻多少信息。收起的内容仍可点画面里的「属性」按钮查看', type: 'segmented', layout: 'cards',
+      options: [['auto', '自动'], ['full', '完整'], ['compact', '精简'], ['minimal', '极简']],
+      notes: {
+        auto: '按屏幕尺寸自动挑一档',
+        full: '属性面板与遗物栏都常驻，信息最全',
+        compact: '收起属性面板，保留遗物栏',
+        minimal: '只留生命 / 体力 / 狂怒三条'
+      } },
 ];
 
 function openSettingsModal() {
@@ -361,7 +385,87 @@ function openSettingsModal() {
     const current = loadSettings();
     listHost.innerHTML = '';
 
+    // ===== 横版排版：按类别分列 =====
+    // 14 项平铺成一列会变成一条又窄又长的竖条（原来 max-width 440px）：
+    // 一屏看不全、还得滚动，而这里面全是"一眼扫过就调完"的开关。
+    // 按类别分成 3 列之后弹窗变成「宽而扁」的一块，与 2D 画面的横版布局同构。
+    //
+    // 分类**只是呈现**：SETTINGS_DEFS 仍是唯一数据源，这里只声明"哪个 key 落在哪一列"。
+    // 漏写的 key 会被兜底逻辑收进「其他」列 —— 宁可多显示一列，
+    // 也不能让某一项设置因为没人给它归类就从界面上消失。
+    const SETTINGS_GROUPS = [
+      { id: 'visual', title: '画面', keys: ['screenShake', 'floatText', 'backgroundEffects', 'glowEffect', 'trial2DParticles'] },
+      { id: 'audio', title: '音频', keys: ['bgm', 'sfx', 'bgmVolume', 'sfxVolume'] },
+      { id: 'system', title: '系统与操作', keys: ['restartConfirm', 'fontSize', 'hudDensity'] }
+    ];
+    const groupOf = {};
+    const groupEls = {};
+    SETTINGS_GROUPS.forEach(g => {
+      g.keys.forEach(k => { groupOf[k] = g.id; });
+      const col = document.createElement('div');
+      col.className = 'settings-group';
+      const title = document.createElement('div');
+      title.className = 'settings-group-title';
+      title.textContent = g.title;
+      col.appendChild(title);
+      listHost.appendChild(col);
+      groupEls[g.id] = col;
+    });
+    /** 某一项该进哪一列；没归类的落到「其他」 */
+    const hostFor = key => {
+      const gid = groupOf[key];
+      if (gid && groupEls[gid]) return groupEls[gid];
+      if (!groupEls.__rest) {
+        const col = document.createElement('div');
+        col.className = 'settings-group';
+        const title = document.createElement('div');
+        title.className = 'settings-group-title';
+        title.textContent = '其他';
+        col.appendChild(title);
+        listHost.appendChild(col);
+        groupEls.__rest = col;
+      }
+      return groupEls.__rest;
+    };
+
     SETTINGS_DEFS.forEach(def => {
+        // 卡片式选择（多档 + 每档含义不同）：纵向铺满整行，理由见 SETTINGS_DEFS 里
+        // hudDensity 的注释与 主样式.css 的 .settings-item-cards
+        if (def.type === 'segmented' && def.layout === 'cards') {
+            const item = document.createElement('div');
+            item.className = 'setting-item settings-item-cards';
+            const currentVal = current[def.key] !== undefined ? current[def.key] : def.options[0][0];
+            const info = document.createElement('div');
+            info.className = 'setting-info';
+            info.innerHTML = `<span class="setting-label">${def.label}</span>
+                <span class="setting-desc">${def.desc || ''}</span>`;
+            item.appendChild(info);
+            const group = document.createElement('div');
+            group.className = 'card-choice';
+            def.options.forEach(opt => {
+                const [val, label] = opt;
+                const note = (def.notes && def.notes[val]) || '';
+                const card = document.createElement('button');
+                card.type = 'button';
+                card.className = 'card-choice-option' + (currentVal === val ? ' active' : '');
+                card.dataset.settingKey = def.key;
+                card.dataset.settingValue = val;
+                // 档位名与说明都在按钮里 —— 玩家读的是「这一档会发生什么」，
+                // 不是一个代号
+                card.innerHTML = `<span class="card-choice-label">${label}</span>` +
+                    (note ? `<span class="card-choice-note">${note}</span>` : '');
+                group.appendChild(card);
+            });
+            item.appendChild(group);
+            // 这一项**不放进任何一列**，而是作为 .settings-list 的直接子项独占一行。
+            // 原因：四张卡片挤在三列布局的其中一列里，会变成一条又窄又高的竖条
+            // （实测每列只有 268px、卡片 171px 宽）。
+            // ⚠️ 跨列（grid-column: 1/-1）只对 .settings-list 的直接子元素生效 ——
+            //    加在列上会把**整列**撑成整行，把别的设置全挤到下面去。
+            item.classList.add('settings-item-wide');
+            listHost.appendChild(item);
+            return;
+        }
         // 分段选择型设置（动画速度 / 文字大小）
         if (def.type === 'segmented') {
             const item = document.createElement('div');
@@ -379,7 +483,7 @@ function openSettingsModal() {
                     <span class="setting-desc">${def.desc}</span>
                 </div>
                 <div class="seg-control">${segHtml}</div>`;
-            listHost.appendChild(item);
+            hostFor(def.key).appendChild(item);
             return;
         }
         // 数字输入框型设置（音量）：范围提示以小字形式悬浮在输入框内右侧
@@ -396,7 +500,7 @@ function openSettingsModal() {
                     <input type="number" data-setting-key="${def.key}" value="${currentVal}" min="${def.min}" max="${def.max}" inputmode="numeric">
                     <span class="number-range-hint">${def.min}~${def.max}</span>
                 </div>`;
-            listHost.appendChild(item);
+            hostFor(def.key).appendChild(item);
             return;
         }
         const item = document.createElement('label');
@@ -410,7 +514,7 @@ function openSettingsModal() {
                 <input type="checkbox" data-setting-key="${def.key}" ${current[def.key] !== false ? 'checked' : ''}>
                 <div class="toggle-slider"></div>
             </div>`;
-        listHost.appendChild(item);
+        hostFor(def.key).appendChild(item);
     });
 
     // ===== 2D 试炼布局自定义（独立入口）=====
@@ -421,11 +525,12 @@ function openSettingsModal() {
         layoutItem.className = 'setting-item';
         layoutItem.innerHTML =
             `<div class="setting-info">
-                <span class="setting-label">2D 试炼按键自定义</span>
+                <span class="setting-label">2D 战斗按键自定义</span>
                 <span class="setting-desc">拖动移动任意面板与按钮，可缩放 / 调透明度 / 隐藏</span>
             </div>
             <button type="button" class="action-button secondary" id="open2DLayoutEditorBtn" style="flex:0 0 auto;padding:8px 14px;">打开编辑器</button>`;
-        listHost.appendChild(layoutItem);
+        // 布局编辑器是"一整块工具"，不是开关 —— 放进「系统与操作」列
+        groupEls.system.appendChild(layoutItem);
         const layoutBtn = layoutItem.querySelector('#open2DLayoutEditorBtn');
         if (layoutBtn) {
             layoutBtn.addEventListener('click', function () {
@@ -905,7 +1010,10 @@ function handleSaveAction(action, slotId) {
                     if (loadGame()) {
                         showToast(`已加载存档 ${slotId}`);
                         closeSaveManager();
+                        // 与导入路径同一套顺序：补标记 → render → 补拉
+                        ensureHostRoomMark();
                         render();
+                        ensureHostRunAlive();
                         renderLog();
                         renderRelics();
                     } else {
@@ -1310,12 +1418,22 @@ async function initExternalSync() {
         try {
           const data = JSON.parse(ev.target.result);
           Object.assign(state, data);
+          // 与 loadGame() 同一个坑：浅合并不会删掉旧键，外来档没有的字段会留下
+          // 上一局的残留（最容易看出来的就是诅咒）。
+          if (!Object.prototype.hasOwnProperty.call(data, '_rtCurses')) {
+            state._rtCurses = [];
+          }
           // 重新绑定英雄技能
           restoreHeroSkillBinding(state.hero);
           restoreHeroSkillBinding(state.trial && state.trial.hero);
           // 换了存档 = 换了本局 → 先让 2D 宿主停掉旧局（否则画布上还是旧战场）
           notifyHostRunReset();
+          // ⚠️ 顺序不能动：补标记 → render → 补拉。
+          //    补标记必须早于 render()，否则 render() 会因 currentRoom 为空而
+          //    判定"不接管"，改写 mode 并收起画布（2D 就再也回不来了）。
+          ensureHostRoomMark();
           render();
+          ensureHostRunAlive();
           renderLog();
           renderRelics();
                 showToast(`已成功导入存档：${file.name}`);
@@ -2521,6 +2639,87 @@ function notifyHostRunReset() {
     }
 }
 
+/**
+ * 换局之后补一次「入场标记」
+ * ------------------------------------------------------------
+ * 引擎的接管判定里有一条：`if (!s.currentRoom) return false;`
+ * （经典2D.js 的 shouldTakeOver —— "还没进第一间房就不接管"，对正常流程是对的）。
+ * 而 currentRoom 是 **2D 自己的 rt:room 回调**写进 state 的：换进来的存档如果
+ * 存的时候恰好不在房间里（刚打完层主、正在选结局、包抽/居间时刻），它就是 null。
+ * 于是形成死锁：
+ *
+ *     不接管 → 不会 startRun → 永远不会产生 currentRoom → 永远不接管
+ *
+ * 表现就是「读档之后文字界面变了、2D 再也回不去」：render() 判定不接管之后
+ * 会把 mode 从 'classic2d' 改回内核的 'event' 并把画布收起来，
+ * 引擎则停在旧局原地不动（实测复现：takeOverReason='currentRoom=null'、
+ * 引擎停在第 9 层，而 state.floor 已经是 12）。
+ *
+ * 这里按存档自己的 rooms / roomIndex 补一个入场标记，让判定能过。
+ * ⚠️ 必须在 render() **之前**调 —— render() 一旦判定"不接管"就会改写 mode、
+ *    收起画布，那时候再补就晚了（下一帧虽然会重新接管，但玩家已经看到画面闪没）。
+ */
+function ensureHostRoomMark() {
+    try {
+        var s = state;
+        if (!s || s.currentRoom) return false;
+        // 判据要与引擎的 shouldTakeOver() 对齐 —— 也就是"除了 currentRoom 之外，
+        // 接管条件本来就都满足"。这里有三个坑：
+        //  ① 不能拿 `mode === 'classic2d'` 当门票：'classic2d' 是**宿主自己的标记**，
+        //     而引擎一旦判定不接管就会把它改回内核的 'event'（见 经典2D.js 的 render），
+        //     于是"第一次没接上"之后，这个标记永远回不来 —— 修复本身被卡死。
+        //     实测：一份正常存档里的 mode 就是 'event'。
+        //  ② 内核自己的界面态（选英雄 / 选增益 / 开始 / 结算）确实不该补。
+        //  ③ 必须真的在跑局：有房间表才算，否则可能是半截数据。
+        if (!s.hero) return false;
+        if (s.gameOver) return false;
+        if (s.mode === 'heroSelect' || s.mode === 'bonusSelect' || s.mode === 'start' ||
+            s.mode === 'gameover' || s.mode === 'finished') return false;
+        if (!s.rooms || !s.rooms.length) return false;
+        var idx = Math.max(0, Math.round(s.roomIndex || 0));
+        var t = (s.rooms[idx] && s.rooms[idx].type) || 'enemy';
+        s.currentRoom = { type: t };
+        console.log('[存档] 换局后缺少入场标记（currentRoom=null），已按存档的房间表补上：第',
+            (idx + 1), '间 ·', t, '· mode=' + s.mode);
+        return true;
+    } catch (e) {
+        console.warn('[存档] 补入场标记失败：', e);
+        return false;
+    }
+}
+
+/**
+ * 换局之后补一刀：该接管却没接管时，直接把 2D 重新拉起来
+ * ------------------------------------------------------------
+ * 为什么光靠 render() 不够：render() 里的接管判定（经典2D 的 shouldTakeOver）
+ * 看的是 **state 自己的字段** —— mode / currentRoom / hero / gameOver。
+ * 而"换局"的三种来源（切槽位 / 重置槽位 / **导入外部存档**）都是把一个**外来**
+ * 的对象 Object.assign 到 state 上：外来档如果来自旧版本、或者存的时候正好不在
+ * 房间里，这些字段就可能不满足判定。后果很难看懂 ——
+ * 文字界面照常重绘（所以"看起来变了"），而 **2D 画面停在上一局的最后一帧**
+ * （引擎根本没重开，canvas 上还是旧的一帧，不刷新永远不变）。用户反馈就是这个。
+ *
+ * 这里只做一件事：**先问引擎"你到底该不该接管、现在跑没跑"**，
+ * 该接管却没跑才补一次 start()。判定交给引擎自己（debug().takeOver），
+ * 所以选英雄 / 选增益 / 结算这些**本来就不该接管**的情形不会被误拉起来。
+ */
+function ensureHostRunAlive() {
+    try {
+        var h = window.经典2D;
+        if (!h || typeof h.debug !== 'function' || typeof h.start !== 'function') return false;
+        var d = h.debug();
+        if (!d.enabled || !d.takeOver) return false;   // 本来就不该由 2D 接管
+        if (d.running || d.booting) return true;        // 已经在跑 / 正在启动
+        var ok = !!h.start();
+        console.log('[存档] 换局后 2D 未接管，已补拉一次：', ok ? '成功' : '失败',
+            '· takeOverReason=' + (d.takeOverReason || 'ready-to-start'));
+        return ok;
+    } catch (e) {
+        console.warn('[2D] 补拉 2D 失败：', e);
+        return false;
+    }
+}
+
 function loadGame() {
     const activeSlot = getActiveSlot();
     if (!activeSlot) {
@@ -2534,6 +2733,13 @@ function loadGame() {
     }
     try {
         Object.assign(state, savedData);
+        // ⚠️ Object.assign 是**浅合并**：它只覆盖存进去有的键，**不会删除** state 上
+        //    已有的键。于是"旧版本导出的档"（没有某些新字段）会把上一局的残留留下 ——
+        //    与「重新开始后诅咒还在」是同一类问题，只是入口不同。
+        //    这里对已知的本局性字段做一次兜底：档里没有就归零，而不是沿用旧值。
+        if (!Object.prototype.hasOwnProperty.call(savedData, '_rtCurses')) {
+            state._rtCurses = [];
+        }
         // ===== 复活存档兼容：角色有生命值则视为存活 =====
         if (state.player && state.player.hp > 0) {
             state.gameOver = false;
@@ -2892,6 +3098,10 @@ function resetCurrentSlot() {
     state.detailMode = false;
     state.encyclopediaState = { currentCategory: null, viewMode: 'categories' };
     state.environment = generateEnvironmentEffect(1, 'normal');
+    // 实时化诅咒一并清空（第 1 条）：只重置 environment 不够 ——
+    // 诅咒存在 state._rtCurses 里，不清的话「重新开始」之后新一局开局
+    // 会把上一局的诅咒原样带进引擎（startRun 的 curses: rtCurses(s)）。
+    state._rtCurses = [];
     state.customDifficulty = normalizeCustomDifficulty({ enabled: true });
     // 试炼状态重置
 
@@ -3404,12 +3614,34 @@ function getEffectiveCustomDifficulty() {
 
 // 难度系数
 // enemyArmor：敌人减伤属性随难度的强度倍率（easy 偏弱、hell 偏强，custom 下由"敌人属性强度"倍率控制）
+/* ============================================================
+   难度修正表
+   ------------------------------------------------------------
+   v2.8 全面加强敌人（用户反馈：「怪物太弱了，所有难度下都全面加强」）。
+   三个维度一起动，只提倍率是不够的：
+     · enemyHp / enemyAtk —— 更耐打、更痛（本表的数值）
+     · 层数成长 —— 后期不掉队（经典2D.js 的 enemyScaler 里那条 base 公式）
+     · enemyAi —— 更主动：更早发现你、追得更紧、出手更频繁
+   后两项都不在这张表里，但都从这张表取值，所以调难度只需要改这一个地方。
+
+   enemyAi 是「倍率包」，缺省视为全 1：
+     speed  移速倍率      windup 前摇倍率（<1 = 出手更快）
+     recover 后摇倍率     detect 索敌范围倍率
+   ⚠️ 前摇在引擎侧有 200ms 硬下限（战斗2D.js 的 boostEnemyDef）：
+      完美闪避窗口固定 150ms，前摇压到窗口附近就变成没法反应的抽奖。
+   ============================================================ */
 const difficultyModifiers = {
-  easy: { enemyHp: 0.9, enemyAtk: 0.9, goldReward: 1.2, shopCost: -2, restBonus: 1, enemyArmor: 0.6 },
-  normal: { enemyHp: 1, enemyAtk: 1, goldReward: 1, shopCost: 0, restBonus: 0, enemyArmor: 0.8 },
-  hard: { enemyHp: 1.15, enemyAtk: 1.2, goldReward: 0.9, shopCost: 2, restBonus: -1, enemyArmor: 1.0 },
-  hell: { enemyHp: 1.35, enemyAtk: 1.4, goldReward: 0.8, shopCost: 4, restBonus: -2, enemyArmor: 1.2 },
-  custom: { enemyHp: 1, enemyAtk: 1, goldReward: 1, shopCost: 0, restBonus: 0, enemyExtra: 1, enemyArmor: 1 }
+  easy: { enemyHp: 1.10, enemyAtk: 1.00, goldReward: 1.2, shopCost: -2, restBonus: 1, enemyArmor: 0.6,
+    enemyAi: { speed: 1.02, windup: 0.98, recover: 0.96, detect: 1.10 } },
+  normal: { enemyHp: 1.30, enemyAtk: 1.22, goldReward: 1, shopCost: 0, restBonus: 0, enemyArmor: 0.8,
+    enemyAi: { speed: 1.08, windup: 0.94, recover: 0.90, detect: 1.22 } },
+  hard: { enemyHp: 1.55, enemyAtk: 1.50, goldReward: 0.9, shopCost: 2, restBonus: -1, enemyArmor: 1.0,
+    enemyAi: { speed: 1.16, windup: 0.88, recover: 0.82, detect: 1.36 } },
+  hell: { enemyHp: 1.85, enemyAtk: 1.80, goldReward: 0.8, shopCost: 4, restBonus: -2, enemyArmor: 1.2,
+    enemyAi: { speed: 1.24, windup: 0.82, recover: 0.76, detect: 1.50 } },
+  // 自定义难度：敌人强度完全由玩家那几张滑杆决定，这里不给额外加成
+  custom: { enemyHp: 1, enemyAtk: 1, goldReward: 1, shopCost: 0, restBonus: 0, enemyExtra: 1, enemyArmor: 1,
+    enemyAi: { speed: 1, windup: 1, recover: 1, detect: 1 } }
 };
 
 // 环境效果池
@@ -3882,6 +4114,11 @@ const state = {
   availableBonuses: [],        // 开局时待选择的增益列表
   unlockedBonuses: [],         // 已解锁的增益（暂未使用）
   environment: null,           // 当前楼层环境效果对象
+  // 实时化诅咒（经典 2D 模式）：由 经典2D.js 读写，纯字符串数组、可安全存档。
+  // ⚠️ 必须在这里声明：它原先只由 经典2D.js 在第一次中诅咒时**随手挂到 state 上**，
+  //    于是「重新开始」那条路（resetCurrentSlot）根本不知道有这个字段，
+  //    重置后旧诅咒原样留在 state 里 → 新一局开局就带着上一局的诅咒。
+  _rtCurses: [],
   records: {                   // 各难度记录
     easy: { bestFloor: 0, clears: 0, deaths: 0 },   // 简单难度
     normal: { bestFloor: 0, clears: 0, deaths: 0 }, // 普通难度
@@ -4182,8 +4419,10 @@ function initSidebar() {
 
   // ===== 侧边栏里新增的三个入口（第 8 / 11 条）=====
   // 图鉴 / 存档管理 / 难度：它们原来只在顶栏，而 2D 画面里顶栏被画布整个盖住，
-  // 等于够不着。这里把它们接进侧边栏 —— 于是 2D 画面经 HUD「更多」打开侧边栏后，
-  // 与文字界面用的是**同一批按钮、同一套逻辑**（不是复制一份实现）。
+  // 等于够不着。这里把它们接进侧边栏 —— 于是开始界面 / 文字界面用侧边栏时，
+  // 与顶栏是**同一批按钮、同一套逻辑**（不是复制一份实现）。
+  // （2D 画面走的是另一条路：那些功能画在画布内的「菜单」里，由 bridge.openPanel
+  //   直接调下面的函数，不经过侧边栏，也不需要先"收侧边栏"。）
   // 绑定与其它侧边栏按钮一致：先收侧边栏，再开目标面板。
   (function bindSidebarExtras() {
     const sbEnc = document.getElementById('sidebarEncyclopediaButton');
@@ -4713,6 +4952,9 @@ function initGame() {
       // 所以这里必须兜一道。引擎已就绪时 __确保2D引擎 会**同步**回调，
       // 走的还是原来那几行、行为完全一致；只有确实没下完时才显示「正在启动 2D…」。
       var _继续读档 = function () {
+          // 补入场标记必须早于 render()：引擎一旦判定"不接管"，就会把 mode 改回
+          // 内核的 'event' 并收起画布 —— 那之后再补也来不及，2D 起不来（详见函数注释）
+          ensureHostRoomMark();
           render();
           renderLog();
           addLog('📂 已加载存档，继续冒险！');
@@ -4763,6 +5005,10 @@ function initGame() {
   state.isFirstAttack = true;
   state.rooms = generateFloorRooms(1);
   state.environment = generateEnvironmentEffect(1, state.difficulty || 'normal');
+  // 新开一局 = 诅咒也必须从零开始（第 1 条）：
+  // 上面这一行只重掷了环境，而实时化诅咒挂在 state._rtCurses 上，
+  // 漏掉它就会有「重开之后身上还带着上一局诅咒」。
+  state._rtCurses = [];
   const envDesc = state.environment.displayValue ? 
     `${state.environment.name} - ${formatEnvDescription(state.environment)} (${state.environment.displayValue})` :
     `${state.environment.name} - ${formatEnvDescription(state.environment)}`;
@@ -6650,11 +6896,15 @@ function getEncyclopediaData() {
         .concat(heavy.map(n => ({ title: '重 · ' + n, description: desc[n] || '' })));
     })(),
     '实时战斗技巧': [
+      { title: '菜单与快捷键', description: 'HUD 的「菜单」按钮或 Esc 键打开本局中枢：左边是本局状态（生命 / 护盾 / 体力 / 金币 / 遗物 / 诅咒明细），右边是通关条件 / 图鉴 / 教程 / 设置 / 存档管理 / 作弊 / 切换老版 2.6 与难度切换，底部是继续战斗 / 结束本局。再按一次 Esc 收起。' },
       { title: '完美闪避', description: '敌人攻击命中的瞬间闪避 → 体力全额返还、震开周围敌人，并进入「锐利」状态（伤害 ×2.2）。' },
       { title: '完美格挡', description: '举盾成型后的短窗口内挡下攻击 → 完全免伤并反弹，同时获得护盾与盾反窗口。' },
       { title: '盾反', description: '完美格挡后的窗口内出手 → 伤害翻倍的前冲反击。' },
       { title: '跳劈', description: '滞空时挥砍 → 高速下坠斩；命中与落地都会造成范围冲击，还有概率把敌人砸进地里。' },
       { title: '狂怒', description: '挨打、连招、完美操作与击杀都会攒怒；满槽后爆发：伤害 ×1.5、移速与攻速提升，代价是受伤 +15%。' },
+      { title: '连携（技巧资源）', description: '完美闪避 / 完美格挡各攒 1 点，显示在主角头顶的菱形点上（上限 3）。点数会被下一次主动攻击吃掉：伤害 ×1.6，跳劈还会连带放大落地冲击波。真掉血就全部清零 —— 所以「先攒着」本身就是一个赌注。' },
+      { title: '机制型敌人', description: '三种怪各针对一种省事的打法：铁壁兵正面免疫（跳劈或绕后才行）、织网者吐网减速（闪避可撕开）、献祭者给同伴套血盾（得先点掉它，中盾的怪身上有青色环）。' },
+      { title: '遗物流派', description: '遗物分血怒 / 完美 / 连携 / 贪婪四派，效果都挂在能主动去创造的状态上（残血、连携、完美判定），同派之间互相放大 —— 三选一卡片上的标签就是流派名，照着凑就是一套构筑。' },
       { title: '腐化脉冲', description: '所有「每回合」类诅咒与环境效果按固定节拍结算（默认 5 秒，越深入越快）。HUD 会显示当前节拍。' },
       { title: '深渊裂隙', description: '每层打完层主后出现：以诅咒为代价换取遗物与金币。可在商店买「净化」、或在祭坛献祭生命来解除。' },
       { title: '遗物', description: '挂在引擎既有机制上的永久强化（完美窗口 / 盾反倍率 / 连招窗口 / 跳劈倍率 / 体力 / 狂怒获取…）。精英与层主必掉。' },
@@ -8170,6 +8420,81 @@ function renderChangelog() {
         '修复图鉴里英雄与怪物条目显示英文内部代号、装备栏显示 sword + roundShield 等英文的问题',
         '修复主动「结束本局」时日志写“你倒下了”的问题；清理死亡结算面板上早已失效的“撤离 +25%”文案',
         '关于苹果用户无法自动切换横屏+全屏已在进2D画面添加提示，如想自动：请手动点击「分享 → 添加到主屏幕」，从主屏幕图标启动'
+      ]
+    },
+    {
+      version:'2.8',
+      date:'节奏、深度与菜单中枢',
+      changes:[
+        '【全难度加强怪物】三个维度一起提，不只是加血加攻。① 难度倍率：简单 / 普通 / 困难 / 地狱的血量 +22% / +30% / +35% / +37%、攻击 +11% / +22% / +25% / +29%（相对旧版）；② 层数成长曲线提斜率：血量 floor×2+4 → floor×2.5+5、攻击 floor÷2 → floor×0.62，第 50 层爪牙从 104 血 / 28 攻变成 169 血 / 41 攻；③ **AI 侵略性** —— 敌人的移速 / 前摇 / 后摇 / 索敌范围现在也随难度走（普通 +8% 移速、索敌 +22%、出手间隔 −8%；地狱 +24% / +50% / −18%），怪会更快发现你、追得更紧、打得更勤',
+        '【全难度加强怪物】精英与层主同步加强（普通难度第 50 层：精英守卫 110→177 血，层主 114→182 血）；前摇保留 200ms 硬下限 —— 完美闪避窗口是 150ms，压到窗口附近这一击就成了没法反应的抽奖，那不是变强是变坏',
+        '【全难度加强怪物】新增 测试/怪物强度测试.js：把"改了多少"变成可读的对照表，并守住四档难度的强弱顺序（防止调参时把两档调反）与两条曲线常数',
+        '【房间节奏】修复后期房间长到跑不完：房间长度原来随层数无限膨胀（第 50 层 8400px、第 100 层 15400px），现已封顶 —— 第 100 层与第 50 层等长，桌面端从 8 屏收到 2 屏',
+        '【房间节奏】普通房敌人数量改为跟房间长度挂钩（原来第 10 层就封顶 7 只，房间却还在变长）：第 100 层每屏可见怪从 0.4 只回到约 6 只，走廊不再空',
+        '【房间节奏】敌人出生区间前移：原来整块第一屏永远是空的、每次进房都要先白跑一屏才见到第一只怪，现在进房几步就接触',
+        '【连携 · 新系统】完美闪避 / 完美格挡各攒 1 点连携（主角头顶的菱形点，上限 3）。点数会被下一次主动攻击吃掉：伤害 ×1.6，跳劈还会连带放大落地冲击波；真掉血就全部清零 ——「打得好」第一次变成一种能攒、能选、有风险的资源',
+        '【遗物重做】24 件从「无条件数值」改成「有条件 + 互相放大」，分血怒 / 完美 / 连携 / 贪婪四派，同派互相放大（例：破釜沉舟的伤害改成随已损失生命连续上升，配血之饥渴与荆棘之心就是一套残血流）',
+        '【遗物重做】新增连携流三件：连携之心（上限 3→5）、不屈意志（挨打只 −1 不清零）、回响精通（连携倍率 1.6→2.2）；三选一卡片直接标出流派，照着凑就是构筑',
+        '【新敌人】铁壁兵：正面免疫伤害，必须跳劈（从上方）或绕到背后 —— 它转身有 700ms 延迟，那个窗口就是绕后的机会',
+        '【新敌人】织网者：吐出的网不打伤害、只把移动降到 45%，而**闪避可以直接把网撕开**',
+        '【新敌人】献祭者：周期性给周围同伴套血盾（中盾的怪身上有青色环），它自己不还手 —— 逼你换目标，而不是按「最近的先打」',
+        '【图鉴】「实时战斗技巧」补上连携 / 机制型敌人 / 遗物流派三条说明',
+        '【菜单与快捷键】「实时战斗技巧」新增首条：Esc / HUD「菜单」打开本局中枢的说明',
+        '【修复】读档 / 导入外部存档之后 2D 画面回不去：引擎的接管判定里有一条「存档没有 currentRoom 就不接管」（= 还没进第一间房），而 currentRoom 是 2D 自己的进房回调写进去的 —— 存档如果是在"不在房间里"的时刻存的（刚打完层主、正在选结局），它就是 null，于是形成死锁：不接管 → 不会重新开局 → 永远不会产生 currentRoom。表现是**文字界面正常重绘、2D 停在上一局的最后一帧**。现在启动读档 / 存档管理加载 / 导入外部存档三个入口都会在 render 之前按存档的房间表补上入场标记，并在之后兜底补拉一次引擎',
+        '【修复】换存档时 Object.assign 浅合并留下的旧局残留：旧版本导出的档没有 _rtCurses 字段，合并时不会删掉 state 上已有的键 —— 上一局的诅咒会留在新局身上（与「重新开始后诅咒还在」同一类问题，只是入口不同）',
+        '【修复】「重新开始」没重置干净、新一局身上还带着上一局的诅咒：诅咒存在 state._rtCurses 里，而它既没在 state 里声明、也没被 resetCurrentSlot / initGame 清理 —— 于是旧诅咒被 startRun 原样带进新局。现在三处一起收口，重新开始必定从零开始',
+        '【修复】作弊面板的「清除诅咒」是个死按钮：它只认已关停的试炼状态（state.trial.active），在经典 2D 模式下直接返回，等于点了没反应',
+        '【修复】窄屏上行尾那颗功能按钮会被推出屏幕外（字号与按钮高度都有绝对下限，一行最少约 320px，窗口更窄时最后那颗就"不见了"，连布局编辑器的框也在屏幕外点不到）。现在整行会自动等比收缩，任何宽度下都落在画面里',
+        '【修复】菜单里切难度会卡死：换完难度要重画一次菜单刷新高亮，而那次重画**先建新层、不销毁旧层** —— 每切一次就叠一层（每层 55 个显示对象 + 一层暗幕，旧层的按钮仍然留在场景里被渲染，而关闭菜单只销毁最后建的那层，前面几层永远回收不掉），连点几次就拖不动了。现在重画前先销毁旧层，且切难度改为**只重画那 5 颗难度胶囊**：整层重建实测 18.2ms（比一帧还长），只重画胶囊 0.53ms',
+        '【修复】布局编辑器里点「退出」的框却选中「更多」：两颗按钮的功能与名字对不上（「退出」点下去弹的其实是暂停菜单，「更多」只是开侧边栏），现已合并，问题不再存在',
+        '【菜单 · 新界面】HUD 的「更多」与「退出」合并成一颗「菜单」，打开画布内的**本局中枢**：左边是本局状态（生命 / 护盾 / 体力 / 金币 / 遗物 / 诅咒明细），右边是系统功能，底部是继续战斗 / 结束本局。快捷键 Esc（再按一次收起）',
+        '【菜单】侧边栏那 8 项功能整体搬进画布菜单：通关条件 / 图鉴 / 教程 / 设置 / 存档管理 / 作弊 / 切换老版 2.6 / 难度。全部按画布风格重绘（同一套圆角面板与胶囊按钮，图标是照同一笔宽新画的，不用 emoji）',
+        '【菜单】难度改成菜单里的一排胶囊，当前难度高亮；点一下立即生效并与侧边栏那个下拉走同一条路径，不会出现两套难度逻辑',
+        '【菜单】诅咒明细独立成区：诅咒在持续结算（腐化脉冲），只给一个计数说不清代价',
+        '【设置 · 横版】设置界面从「一列 14 项的竖长条」改成**按类别分列**（画面 / 音频 / 系统与操作），宽而扁、一屏看完，与 2D 画面的横版布局同构；横屏手机上保持三列，窄屏自动降到两列 / 一列',
+        '【其它】侧边栏本体保留（开始界面 / 文字界面照旧用它），仅 2D 画面里不再有它的入口'
+      ]
+    },
+    {
+      version:'2.8.1',
+      date:'遗物终于看得见了',
+      changes:[
+        '新增遗物栏，在血条下面，每件遗物一个图标（27 件各有专属符号），外圈颜色表示它属于血怒 / 完美 / 连携 / 贪婪哪一派，一眼能看出拿了几件、在凑哪一套',
+        '遗物栏的图标可以点，打开「本局遗物」，一件一件写着名字、品质和完整效果，件数多了自动分页',
+        '修正遗物效果说明：之前显示的是文字模式的旧描述，和 2D 实时效果对不上，照着描述凑流派会走偏，现在和图鉴说的是同一件事',
+        '设置里新增「HUD 密度」：自动 / 完整 / 精简 / 极简四档，控制战斗中常驻多少信息，默认自动按屏幕尺寸挑，改完即时生效',
+        '手机横屏时属性面板会被收起，而它原来的说法是「随时切文字界面」——那个按钮 2.8 已经删了，等于手机上看不到攻击暴击闪避这些数值。现在这些数值放进了遗物卡片的「属性明细」页，另外补上生命上限和体力上限',
+        '遗物栏和属性面板的刷新加了缓存，窗口最小化时不再重排 HUD，避免切回来时界面闪一下、把自定义的面板位置顶掉',
+        '没拿遗物的时候界面位置和 2.8 完全一样，不会因为这次改动平白少一条画面',
+        '修复部分已知问题'
+      ]
+    },
+    {
+      version:'2.8.2',
+      date:'手机画面不再糊',
+      changes:[
+        '手机（华为浏览器、iPhone 这类高分屏）上的 2D 战斗画面不再发糊：画布改成按屏幕真实像素渲染，同一块屏幕上画出来的像素是原来的 2~3 倍，文字、血条、图标、按钮边缘都是锐利的，也不再被浏览器放大成一格一格的方块',
+        '电脑上完全没变：像素密度是 1 的设备走的就是原来那一套，界面位置、字号、相机一个像素都没动',
+        '清楚是有代价的（像素多了 2~3 倍），所以低配机会自动把密度降一档，宁可稍糊也不卡；降到底就是旧版的效果',
+        '界面上的文字全部按屏幕密度重新渲染，属性面板、药水数量、任务提示这些中文小字在手机上能看清了',
+        '修复手机横屏时 2D 画面没铺满、底下露出文字界面的问题',
+        '修复部分已知问题'
+      ]
+    },
+    {
+      version:'2.8.3',
+      date:'属性入口与图鉴补完',
+      changes:[
+        '属性入口改成正式按钮：原来它是遗物栏旁边一颗 10px 的小字「▸ 属性」，手机上常被技能按钮盖住、点不到；现在它是功能按钮行里的「属性」（属性 / 商店 / 图鉴 / 设置 / 菜单），样式和图鉴、设置一样，点开直接就是属性明细',
+        '这颗「属性」按钮也能在「2D 战斗按键自定义」里单独拖动、缩放、隐藏了',
+        '血条空着的那一截现在看得见了：以前只有左边填了色的部分显眼，狂怒条这种常是空的，旁边的「狂怒 0/100」就像飘在半空；底槽提亮之后是一条完整的条，数字老老实实贴在条尾',
+        '图鉴补全铁壁兵、织网者、献祭者的说明（正面免疫怎么破、闪避能把网撕开、先点掉套盾的那只）',
+        '狂怒不再自动爆发：以前满怒 12 秒没按 R 会自己进入狂怒，现在满怒就一直存着，等你按 R（什么时候用由你决定）',
+        '修复没拿遗物时，遗物栏那排「遗物 / 暂无」小字会画在狂怒条和属性面板之间的问题',
+        '修复狂怒数值在镜头移动后跑偏的问题：刚进房间时它正好贴在条尾，人一走、镜头一跟，数字就贴着条往左滑，最后压到条上。现在它和生命、体力那两个数字一样钉在屏幕上，条怎么动它都跟着条',
+        '修复布局编辑器里点「重置」之后血条会变粗一点（多 4 像素）的问题',
+        '修复布局编辑器里已经隐藏掉的按钮仍然点得到的问题',
+        '修复部分已知问题'
       ]
     },
   ];

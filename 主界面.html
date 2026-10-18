@@ -20,10 +20,10 @@
     <meta name="format-detection" content="telephone=no" />
     <link rel="manifest" href="manifest.webmanifest" />
     <title>深渊回廊</title>
-    <link rel="stylesheet" href="主样式.css?v=202610040" />
+    <link rel="stylesheet" href="主样式.css?v=202611005" />
     <!-- defer：音频引擎是 43 KB，不阻塞首屏渲染；defer 脚本按文档顺序执行，
          它在 <head> 里最靠前，所以仍会先于 主程序.js 跑完 —— 时序与原来一致。 -->
-    <script src="AbyssAudio.js?v=202609320" defer></script>
+    <script src="AbyssAudio.js?v=202611005" defer></script>
   </head>
   <body>
     <!-- ===== 全局特效层 ===== -->
@@ -45,7 +45,7 @@
         </div>
         <div class="start-subtitle">— 咕咕嘎嘎 —</div>
         <button id="startGameBtn" class="start-button">开始游戏</button>
-        <div class="start-version">v2.7 by heshen</div>                     <!--更新记得版本号！！！-->
+        <div class="start-version">v2.8.3 by heshen</div>                     <!--更新记得版本号！！！-->
       </div>
       <canvas id="startFxCanvas" class="start-fx-canvas" aria-hidden="true"></canvas>
       <div class="start-cursor-glow" id="startCursorGlow" aria-hidden="true"></div>
@@ -95,7 +95,7 @@
     <div class="app-shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">by heshen v2.7</p>                             <!--更新记得版本号！！！-->
+          <p class="eyebrow">by heshen v2.8.3</p>                             <!--更新记得版本号！！！-->
           <h1>深渊回廊</h1>
         </div>
         <div class="topbar-controls">
@@ -705,15 +705,20 @@
     <!-- ===== 设置界面 ===== -->
     <div id="settingsModal" class="modal hidden">
       <div class="modal-backdrop" data-action="close-settings"></div>
-      <div class="modal-content" style="max-width: 440px;">
+      <!-- 宽度交给 CSS（横版：按类别分列铺开，宽而扁）。
+           这里刻意不再写内联 max-width —— 内联值会盖掉媒体查询，
+           窄屏上降级成单列时反而被钉死在桌面宽度。 -->
+      <div class="modal-content settings-modal-content">
         <div class="modal-header">
           <h3>设置</h3>
           <button class="modal-close" data-action="close-settings">×</button>
         </div>
         <div id="settingsList" class="settings-list">
-          <!-- 由 JS 渲染 -->
+          <!-- 由 JS 渲染（按类别分成若干列） -->
         </div>
-        <button class="action-button secondary" data-action="close-settings" style="width:100%; margin-top:12px;">关闭</button>
+        <div class="settings-foot">
+          <button class="action-button secondary" data-action="close-settings">关闭</button>
+        </div>
       </div>
     </div>
     <!-- ===== 属性详情弹窗 ===== -->
@@ -739,7 +744,7 @@
          defer：不阻塞 HTML 解析，星空开始界面立刻出现。
          它的启动逻辑本来就挂在 DOMContentLoaded（主程序.js 行 9987 / 12519），
          而 defer 脚本在 DOMContentLoaded 之前执行完，时序天然兼容。 -->
-    <script src="主程序.js?v=202610230" defer></script>
+    <script src="主程序.js?v=202611005" defer></script>
     <!-- 试炼文字界面已随试炼关停整体移除（P5 · 规划 §7）。
          2D 画布层不在这里 —— 它已经搬到 </body> 之前，现在它就是主画面。 -->
 
@@ -823,8 +828,22 @@
       if (s && s.ready) {
         var cam = s.cameras.main, hh = (s.hero.displayHeight || 64) * 0.82;
         var hy = s.hero.y - cam.scrollY;
-        L.push('画布 ' + s.scale.width + '×' + s.scale.height + '  触摸 ' + (s.isTouch ? 'Y' : 'N') +
-               '  帧 ' + Math.round(g.loop.frame));
+        // ⚠️ 两个口径都要显示，否则看不出"到底有没有真的按 DPR 渲染"：
+        //    逻辑 = s.scale.width（项目布局用的口径，也是画布的 CSS 显示尺寸）
+        //    渲染 = renderer.width（渲染管线的物理缓冲尺寸），比值就是像素密度
+        var rw = g.renderer.width, rh = g.renderer.height;
+        var cssW = s.scale.canvas.clientWidth || s.scale.width;
+        L.push('逻辑 ' + s.scale.width + '×' + s.scale.height +
+               '  渲染 ' + rw + '×' + rh +
+               '  密度 ' + (cssW > 0 ? (rw / cssW).toFixed(2) : '?') + '×');
+        // 视口对比：底部控件被切时，看这三个高度就知道是谁的问题
+        //   CSS可视区 = visualViewport（真实可视）/ innerHeight（含地址栏）
+        //   画布高 = 画布 CSS 高度；它大于可视区时底部就会被切掉
+        var vvh = (window.visualViewport && Math.round(window.visualViewport.height)) || -1;
+        var cssH = s.scale.canvas.clientHeight || 0;
+        L.push('可视区 vvH ' + vvh + '  innerH ' + innerHeight + '  画布CSS ' + cssW + '×' + cssH +
+               (cssH > vvh && vvh > 0 ? '  ⚠底部被切' : '  OK'));
+        L.push('触摸 ' + (s.isTouch ? 'Y' : 'N') + '  帧 ' + Math.round(g.loop.frame));
         L.push('安全线 ' + s.hudSafeTop() + '  HUD下沿 ' + Math.round(s._hudRowBottom || 0) +
                '  跟随偏移 ' + s._camFollowOffsetY);
         L.push('scrollY ' + Math.round(cam.scrollY) + '  scrollX ' + Math.round(cam.scrollX));
@@ -914,10 +933,10 @@
     'use strict';
 
     var FILES = [
-      'vendor/phaser.min.js?v=20250907p',
-      '角色形象.js?v=20250910r2',
-      '战斗2D.js?v=202610210',
-      '经典2D.js?v=202610221'
+      'vendor/phaser.min.js?v=202611005',
+      '角色形象.js?v=202611005',
+      '战斗2D.js?v=202611005',
+      '经典2D.js?v=202611005'
     ];
 
     var 加载中 = null;        // 进行中的 Promise（复用，避免重复下载）

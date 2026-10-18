@@ -216,6 +216,43 @@
       head: 'crownAntlers', weapon: 'scythe', offhand: null, legs: 'wisp',
       extras: ['cape', 'aura', 'halo'],
       animRate: 1.35    // 两套动作：长镰横扫 + 跳跃砸地
+    },
+
+    // ---------------- 机制型敌人（B 项：每一只都要求玩家动用工具箱里的某一件）----------------
+    // 设计约束：**不新增任何绘制部件**，只用上面已有的部件族重新配色组合。
+    // 依据是 README 的那条约定「剪影优先 + 配色即身份」——
+    // 轮廓负责"这是什么类型"，配色负责"具体是哪一只"，所以复用剪影不会认错人，
+    // 而三只的语义色都刻意与既有敌人拉开（铁青 / 蛛丝绿 / 血祭红）。
+    bulwark: {
+      kind: 'mob', className: '铁壁兵 · 圆盾横列（正面免疫）',
+      build: { bw: 30, bh: 24, headR: 10, hip: 47, shoulder: 8 },
+      // 铁青冷钢。**杂兵用圆盾，精英用塔盾** —— 这一条是实测逼出来的：
+      // 原本给它的部件组合（greathelm + towerShield + halberd + plume）与精英守卫
+      // 墨迹宽度完全一样（61px 对 61px @同一坐标），而只换武器/去掉顶羽**毫无变化**，
+      // 因为这一族的轮廓是被塔盾整体支配的。所以真正的区分点只能是盾本身，
+      // 而"大盾=精英、小盾=杂兵"也比单纯换色更符合直觉。
+      colors: { main: 0x4a6a8a, sub: 0x24384c, acc: 0x9fd8ff, eye: 0x9fd8ff, dark: 0x101a24 },
+      head: 'helm', weapon: 'spear', offhand: 'roundShield', legs: 'legs',
+      extras: []
+    },
+    weaver: {
+      kind: 'mob', className: '织网者 · 四足吐丝（织网减速）',
+      build: { bw: 30, bh: 20, headR: 9, hip: 46, shoulder: 5 },
+      // 蛛丝绿：四足剪影（beast）在怪物里只有黑暗爪牙用过，
+      // 而它无武器、拖着破布与尾丝 —— 轮廓独一无二
+      colors: { main: 0x3a5a4a, sub: 0x1c2e26, acc: 0xa8e88a, eye: 0xd8ff9a, dark: 0x0a1410 },
+      head: 'rot', weapon: null, offhand: null, legs: 'beast',
+      extras: ['tatter', 'tails'],
+      animRate: 1.4
+    },
+    sacrificer: {
+      kind: 'mob', className: '献祭者 · 血祭祭司（给同伴套盾）',
+      build: { bw: 22, bh: 25, headR: 9, hip: 51, shoulder: 3 },
+      // 血祭红。**无面兜帽 + 不持武器**（纯施法者）—— 与"骨面 + 骨杖"的死灵法师分开：
+      // 实测两者原本墨迹宽度同为 53px（部件组合整个撞车），改完两侧轮廓与头部都不同。
+      colors: { main: 0x7a1a2a, sub: 0x3e0c16, acc: 0xff7a8a, eye: 0xff9aa8, dark: 0x1a0408 },
+      head: 'facelessHood', weapon: null, offhand: null, legs: 'robe',
+      extras: ['orb', 'ghostOrbs', 'aura']
     }
   };
 

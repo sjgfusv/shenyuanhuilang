@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="151" height="20" role="img" aria-label="engine: Phaser 3.80.1">
+  <title>engine: Phaser 3.80.1</title>
+  <g shape-rendering="crispEdges">
+    <rect width="53" height="20" fill="#2a3040"/>
+    <rect x="53" width="98" height="20" fill="#9a8ef0"/>
+  </g>
+  <g text-anchor="middle" font-family="'Segoe UI',Verdana,Geneva,-apple-system,sans-serif" font-size="11">
+    <text x="26.5" y="14" fill="#c9d4ea">engine</text>
+    <text x="102" y="14" fill="#0b1017">Phaser 3.80.1</text>
+  </g>
+</svg>
