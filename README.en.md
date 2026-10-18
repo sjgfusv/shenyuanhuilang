@@ -13,7 +13,7 @@
   <img alt="pwa" src="badges/en/pwa.svg" />
   <img alt="platform" src="badges/en/platform.svg" />
 
-  <sub>9 heroes · 13 enemy types · 27 relics · 15 environment effects · 13 endings</sub>
+  <sub>9 heroes · 10 enemy types · 24 relics · 15 environment effects · 13 endings</sub>
 
   <br /><br />
 
@@ -31,7 +31,7 @@ picking up relics and carrying curses. Every floor ends with a floor lord — an
 
 There is no bundler, no `npm install` and no CDN. It does not even ship a single art asset:
 
-- **Every character is drawn by code** — 9 heroes × 15 frames, 13 enemy types × 7 frames and 4 projectile skins, all rasterised frame by frame on offscreen canvases;
+- **Every character is drawn by code** — 9 heroes × 15 frames, 10 enemy types × 7 frames and 4 projectile skins, all rasterised frame by frame on offscreen canvases;
 - **Every sound is synthesised by code** — BGM and SFX are generated live with WebAudio; there is no `.mp3` / `.wav` anywhere in the repo;
 - **The engine is vendored** — `vendor/phaser.min.js`, so the game also runs offline.
 
@@ -45,11 +45,10 @@ The whole game is a pile of static files you can open by double-clicking.
 |---|---|
 | 🕹️ **Side-scrolling real-time combat** | Charged jumps, dive attacks, dodge rolls, perfect blocks, shield counters, chain attacks and fury bursts — every timing window is learnable |
 | 🎭 **9 heroes, each with its own look and feel** | Two systems, melee and ranged; the Ranger, Mage and Sage fire their own projectiles (Gale Arrow / Arcane Orb / Psionic Wave) |
-| 👹 **13 enemy types with distinct AI** | Chaser / charger / flyer / ranged kiter / shield-bearer / support / boss. The Mimic **copies your hero's body, gear and attack style**; three **mechanic enemies** each shut down one lazy approach |
-| 🧬 **Run-based Roguelike** | 27 relics across **four schools** (blood / perfect / link / greed) that amplify each other, plus 10 curses + 15 environment effects |
-| ⚡ **Link (a skill resource)** | Perfect dodges and perfect blocks bank points; your next attack spends one, and taking real damage wipes them all — "playing well" becomes something you can bank, choose and gamble on |
+| 👹 **10 enemy types with distinct AI** | Chaser / charger / flyer / ranged kiter / boss. The Mimic **copies your hero's body, gear and attack style** |
+| 🧬 **Run-based Roguelike** | 24 relics + 10 curses + 15 environment effects, stacking risk and reward |
 | 🗺️ **Branching room map** | Pick your route every floor: enemy / elite / mirror / treasure / shrine / shop / rest / random event / floor lord |
-| ♻️ **Two complete builds side by side** | One click switches between 2.8 (real-time 2D) and 2.6 (the frozen legacy build); their saves are kept apart |
+| ♻️ **Two complete builds side by side** | One click in the sidebar switches between 2.7 (real-time 2D) and 2.6 (the frozen legacy build); their saves are kept apart |
 | 📱 **Playable on phones** | Virtual stick + touch buttons, automatic landscape and fullscreen, multi-touch, installable as a PWA |
 | 💾 **5 save slots** | Import / export / rename / overwrite, autosave, and cross-version migration that only copies — never deletes |
 | 📚 **In-game codex** | 10 categories built from the very data the game runs on — the codex cannot lie about the numbers |
@@ -214,7 +213,7 @@ Neither option needs any extra configuration — `index.html` in the root alread
 ├── 主程序.js                # Core: heroes / rooms / economy / difficulty / endings / codex / saves / cheats / dev commands
 ├── 经典2D.js                # Host: turns the core's room list into 2D rooms and writes real-time results back
 ├── 战斗2D.js                # Presentation: the real-time action engine (physics / enemy AI / HUD / in-canvas panels)
-├── 角色形象.js              # Procedural sprite generation for 9 heroes + 13 enemy types
+├── 角色形象.js              # Procedural sprite generation for 9 heroes + 10 enemy types
 ├── AbyssAudio.js            # Procedural audio engine (BGM + SFX, all synthesised live)
 ├── 试炼程序.js               # Legacy: the 2.6 trial-mode layer (shut down in the new build, no longer loaded)
 ├── manifest.webmanifest     # PWA manifest
@@ -260,7 +259,7 @@ which is why the same combat engine still serves the legacy 2.6 build as well.
 ### Details worth a look
 
 <details>
-<summary><b>Character art: one part library, 22 characters</b></summary>
+<summary><b>Character art: one part library, 19 characters</b></summary>
 
 Five part families (`head / weapon / offhand / legs / extras`) plus body parameters share one codebase yet look nothing alike:
 silhouette first (at 64px tall and moving fast, the outline is the only thing you can read instantly), colour as identity
@@ -316,7 +315,7 @@ there the official route is "Add to Home Screen".
 | Document | Contents |
 |---|---|
 | [`其他/2D实时战斗实现说明.md`](其他/2D实时战斗实现说明.md) | Combat design, architecture, public API, AI state machine, design system and per-item measurements |
-| [`其他/角色形象设定.md`](其他/角色形象设定.md) | Silhouette design and procedural drawing conventions for all 22 characters |
+| [`其他/角色形象设定.md`](其他/角色形象设定.md) | Silhouette design and procedural drawing conventions for all 19 characters |
 | [`待做/2.7规划.md`](待做/2.7规划.md) | The complete 2.7 plan ("merge trials into classic") with per-phase delivery records |
 | [`待做/2.7合并遗留修复清单.md`](待做/2.7合并遗留修复清单.md) | Post-merge issues and the evidence gathered while fixing them |
 | `其他/*预览.html` | Standalone preview pages (start screen / character art / trial styles) running the same code as the game |
@@ -326,11 +325,7 @@ there the official route is "Add to Home Screen".
 
 ## 🗺️ Versions and roadmap
 
-- **v2.8.3** (current) stats entry and codex cleanup: the tiny `▸ stats` text became a proper **"Stats" pill** in the button row (same style as Codex / Settings, and individually draggable / scalable / hideable in "2D combat key customisation"); meter tracks are brighter so the empty part of a bar is visible and the fury value no longer looks detached; codex entries for Bulwark / Weaver / Sacrificer are written up
-- **v2.8.2** no more blur on phones: the canvas now renders at the screen's **true pixel density** (text, bars and icons are crisp on high-DPI phones and no longer upscaled into blocks), with zero change on desktop; low-end devices step one density level down to keep the frame rate
-- **v2.8.1** relics are finally visible: a **relic bar** now sits under the health row, all 27 relics have their own glyph and a ring coloured by school (blood / perfect / link / greed), and clicking one opens the full effect text; the stats that low-landscape phones used to hide moved into the relic card's "stats" page; settings gained a four-step **HUD density** control (auto / full / compact / minimal)
-- **v2.8** pacing, depth and a menu hub: room length capped and enemy density moved forward (no more "run for minutes to fight one enemy"), a new **Link** skill resource, relics rebuilt around four schools, three mechanic enemies; **enemies buffed across all four difficulties** (health, attack, per-floor growth and AI aggression); the HUD's "More" and "Quit" merged into one **Menu** button (an in-canvas run hub, toggled with Esc), and the settings screen rebuilt as category columns; also fixes "curses survive a restart" and a last-button-off-screen bug on narrow viewports — see the in-game changelog
-- **v2.7.2** feel and display fixes
+- **v2.7.2** (current) feel and display fixes — see the in-game changelog
 - **v2.7** two builds and a fully 2D game: classic mode became real-time 2D, trials were merged in and shut down, 2.6 was frozen
 - **v2.6** 2D trials: turn-based combat rebuilt as a side-scrolling action game
 - **v0.1 → v2.5** from a text roguelike upwards: hero skills, relics, endings, codex, saves, cheat panel, custom difficulty, random events…
@@ -387,7 +382,7 @@ Yes. A cheat panel is built into the game (open it from the sidebar) and there i
 
 ## 👤 Author
 
-**heshen** — all 30,000+ lines written by one person.
+**heshen** — all 20000+ lines written by one person.
 
 From the v0.1 text roguelike to the 2.7 side-scrolling action game, through turn-based combat, 2D trials,
 two coexisting builds and their eventual merge. The changelog and every round of feedback in `待做/` are still in the repo.
@@ -404,3 +399,5 @@ so go ahead and change whatever you like.
 ## ⭐ About
 
 If this project looks like fun, a star is appreciated — or open an issue and tell me how deep into the corridor you got.
+
+(This document was written by AI)
