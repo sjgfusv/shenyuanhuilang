@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>塌陷回廊预览 · 深渊回廊 2.9</title>
+<style>
+  /* ============================================================
+     塌陷回廊 · 样板房预览
+     设计语言沿用 2D 战斗引擎：深底 / 细描边 / 语义色 / 圆角克制。
+     这是调参工具，不是宣传页 —— 信息密度优先，动效只用来标记状态变化。
+     ============================================================ */
+  :root {
+    --bg: #06070d;
+    --stage-bg: #04050a;
+    --panel: #0c111e;
+    --panel-2: #101728;
+    --line: rgba(255, 255, 255, .08);
+    --line-strong: rgba(255, 255, 255, .16);
+    --text: #e8eefc;
+    --muted: #8a99b8;
+    --dim: #5d6a86;
+    --accent: #73f0b4;
+    --cyan: #5fd0e0;
+    --gold: #f0d06a;
+    --violet: #c79aff;
+    --danger: #ff8a7a;
+    --panel-w: 360px;
+    --radius: 14px;
+    --mono: "Cascadia Mono", "Consolas", "SFMono-Regular", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  button, input { font: inherit; color: inherit; }
+  button { -webkit-tap-highlight-color: transparent; }
+
+  #stage {
+    position: fixed; inset: 0 var(--panel-w) 0 0;
+    background: var(--stage-bg);
+    overflow: hidden;
+  }
+  #stage canvas { display: block; }
+
+  /* ------------------------------ 侧栏 ------------------------------ */
+  #panel {
+    position: fixed; top: 0; right: 0; bottom: 0; width: var(--panel-w);
+    background:
+      radial-gradient(120% 60% at 100% 0%, rgba(199, 154, 255, .08), transparent 60%),
+      linear-gradient(180deg, rgba(255,255,255,.02), transparent 28%),
+      var(--panel);
+    border-left: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,.16) transparent;
+  }
+  #panel::before {
+    content: ""; position: sticky; top: 0; height: 2px; flex: none;
+    background: linear-gradient(90deg, var(--accent), var(--cyan) 45%, var(--violet));
+    opacity: .9;
+  }
+  /* 侧栏是"内容多就滚动"，不是"把卡片压扁"——flex 子项默认会收缩并把内容裁掉 */
+  #panel > * { flex: 0 0 auto; }
+  #panel::-webkit-scrollbar { width: 8px; }
+  #panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 99px; }
+
+  .head { padding: 22px 22px 0; }
+  .eyebrow {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--violet); font-weight: 700;
+  }
+  .eyebrow::before { content: ""; width: 18px; height: 1px; background: currentColor; opacity: .7; }
+  h1 {
+    margin: 10px 0 6px; font-size: 26px; line-height: 1.15;
+    letter-spacing: .08em; font-weight: 800;
+    background: linear-gradient(92deg, #fff 10%, #cfe6ff 55%, var(--violet));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede {
+    margin: 0; font-size: 12px; line-height: 1.75; color: var(--muted);
+  }
+
+  .hud {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    margin: 18px 22px 0; border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden; background: rgba(255,255,255,.015);
+  }
+  .stat { padding: 10px 10px 9px; border-right: 1px solid var(--line); min-width: 0; }
+  .stat:last-child { border-right: 0; }
+  .stat span {
+    display: block; font-size: 10px; letter-spacing: .08em;
+    color: var(--dim); margin-bottom: 3px; white-space: nowrap;
+  }
+  .stat b {
+    display: block; font-family: var(--mono); font-size: 16px; font-weight: 700;
+    font-variant-numeric: tabular-nums; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: color .18s ease;
+  }
+  .stat b.hot { color: var(--gold); }
+  .stat b.bad { color: var(--danger); }
+  .stat b.good { color: var(--accent); }
+
+  .primary {
+    margin: 14px 22px 0; height: 46px; border-radius: 11px; cursor: pointer;
+    border: 1px solid rgba(115, 240, 180, .5);
+    background: linear-gradient(180deg, rgba(115,240,180,.2), rgba(115,240,180,.08));
+    color: var(--accent); font-weight: 800; letter-spacing: .12em;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    box-shadow: 0 6px 24px rgba(40, 200, 140, .08), inset 0 1px 0 rgba(255,255,255,.12);
+    transition: transform .12s ease, background .18s ease, box-shadow .18s ease;
+  }
+  .primary:hover { background: linear-gradient(180deg, rgba(115,240,180,.3), rgba(115,240,180,.12)); box-shadow: 0 8px 30px rgba(40,200,140,.16), inset 0 1px 0 rgba(255,255,255,.16); }
+  .primary:active { transform: translateY(1px) scale(.995); }
+  kbd {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    padding: 2px 6px; border-radius: 5px; color: var(--accent);
+    border: 1px solid rgba(115,240,180,.35); background: rgba(0,0,0,.25);
+  }
+
+  .controls { padding: 18px 22px 4px; }
+  .group-title {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin: 0 0 10px; font-size: 11px; letter-spacing: .14em; color: var(--muted);
+    text-transform: uppercase; font-weight: 700;
+  }
+  .group-title em { font-style: normal; font-size: 10px; color: var(--dim); letter-spacing: .04em; text-transform: none; }
+  .field { display: block; margin-bottom: 14px; }
+  .field-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px; }
+  .field-head span { font-size: 12px; color: #c6d2e8; }
+  .field-head output {
+    font-family: var(--mono); font-size: 12px; color: var(--gold);
+    font-variant-numeric: tabular-nums;
+  }
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 18px;
+    background: transparent; cursor: pointer; display: block;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 99px;
+    background: linear-gradient(90deg, rgba(115,240,180,.55), rgba(199,154,255,.35));
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 16px; height: 16px; margin-top: -6px;
+    border-radius: 50%; background: #0b1220; border: 2px solid var(--accent);
+    box-shadow: 0 0 0 3px rgba(115,240,180,.10), 0 2px 8px rgba(0,0,0,.5);
+    transition: box-shadow .15s ease, transform .15s ease;
+  }
+  input[type="range"]:hover::-webkit-slider-thumb { box-shadow: 0 0 0 5px rgba(115,240,180,.14), 0 2px 8px rgba(0,0,0,.5); }
+  input[type="range"]:focus-visible { outline: none; }
+  input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 6px rgba(115,240,180,.22); }
+  input[type="range"]::-moz-range-track { height: 4px; border-radius: 99px; background: rgba(115,240,180,.45); }
+  input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #0b1220; border: 2px solid var(--accent); }
+  select {
+    width: 100%; height: 38px; border-radius: 9px; cursor: pointer;
+    border: 1px solid var(--line-strong); background: #0b1220; color: var(--text);
+    padding: 0 11px; font-size: 12px; appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 16px) 16px, calc(100% - 11px) 16px;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
+  select:hover { border-color: rgba(255,255,255,.28); }
+  select:focus-visible { outline: 2px solid rgba(115,240,180,.45); outline-offset: 2px; }
+  select option { background: #0b1220; color: var(--text); }
+
+  .card {
+    margin: 4px 22px 0; border: 1px solid var(--line); border-radius: 12px;
+    background: rgba(255,255,255,.015); overflow: hidden;
+  }
+  .card-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 12px; border-bottom: 1px solid var(--line);
+    font-size: 11px; letter-spacing: .1em; color: var(--muted); text-transform: uppercase;
+  }
+  .card-head b { color: var(--text); font-size: 11px; letter-spacing: .1em; }
+  .card-head span { font-family: var(--mono); font-size: 10px; color: var(--dim); letter-spacing: 0; }
+  dl.stats { margin: 0; padding: 10px 12px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 7px 12px; }
+  dl.stats div { display: flex; justify-content: space-between; align-items: baseline; min-width: 0; }
+  dl.stats dt { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  dl.stats dd {
+    margin: 0; font-family: var(--mono); font-size: 12px; color: var(--text);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  dl.stats dd.warn { color: var(--danger); }
+  dl.stats dd.ok { color: var(--accent); }
+
+  #result { border-left: 2px solid var(--accent); }
+  #result.forced { border-left-color: var(--danger); }
+  #result .card-head b { color: var(--accent); }
+  #result.forced .card-head b { color: var(--danger); }
+  #result[hidden] { display: none; }
+  .result-tag {
+    font-family: var(--mono); font-size: 10px; padding: 1px 7px; border-radius: 99px;
+    border: 1px solid rgba(115,240,180,.35); color: var(--accent);
+  }
+  #result.forced .result-tag { border-color: rgba(255,138,122,.4); color: var(--danger); }
+
+  #advice {
+    margin: 10px 22px 0; padding: 10px 12px; border-radius: 10px;
+    font-size: 11px; line-height: 1.7; color: #cfe0ff;
+    background: rgba(95,208,224,.06); border: 1px solid rgba(95,208,224,.16);
+  }
+  #advice:empty { display: none; }
+  #advice b { color: var(--cyan); }
+
+  #deathNote {
+    margin: 10px 22px 0; padding: 10px 12px; border-radius: 10px;
+    font-size: 12px; line-height: 1.6; font-weight: 700; color: #ffd8d2;
+    background: rgba(255,138,122,.10); border: 1px solid rgba(255,138,122,.35);
+  }
+  #deathNote[hidden] { display: none; }
+
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 14px 22px 0; }
+  .actions button {
+    height: 36px; border-radius: 9px; cursor: pointer;
+    border: 1px solid var(--line-strong); background: rgba(255,255,255,.03);
+    color: #cfdaee; font-size: 12px; letter-spacing: .04em;
+    transition: background .15s ease, border-color .15s ease, color .15s ease;
+  }
+  .actions button:hover { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.28); color: #fff; }
+  .actions button:active { transform: translateY(1px); }
+  .actions button.ghost { color: var(--muted); }
+  .actions button.ghost:hover { color: var(--danger); border-color: rgba(255,138,122,.4); }
+
+  .hint {
+    /* 2.9.2：判据表是这一页的结论区，10px 读不下去 —— 抬到 11.5px 并提一档对比度 */
+    margin: 12px 22px 20px; font-size: 11.5px; line-height: 1.7; color: #a8b8d8;
+  }
+  .hint b { color: #d8e4f8; font-weight: 700; }
+
+  #error {
+    margin: 14px 22px 0; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid rgba(255,138,122,.35); background: rgba(255,138,122,.08);
+    color: #ffd8d2; font-size: 11px; line-height: 1.7;
+  }
+  #error[hidden] { display: none; }
+
+  #drawer { display: none; }
+
+  /* ------------------------------ 移动端 ------------------------------ */
+  @media (max-width: 820px) {
+    #stage { inset: 0; }
+    #panel {
+      top: auto; height: 60vh; width: 100%;
+      border-left: 0; border-top: 1px solid var(--line-strong);
+      border-radius: 18px 18px 0 0;
+      transform: translateY(calc(100% - 0px));
+      transition: transform .28s cubic-bezier(.22,.8,.24,1);
+      box-shadow: 0 -20px 60px rgba(0,0,0,.6);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    #panel.open { transform: translateY(0); }
+    #panel::before { border-radius: 18px 18px 0 0; }
+    #drawer {
+      display: flex; position: fixed; right: 14px; bottom: 14px; z-index: 30;
+      align-items: center; gap: 8px; height: 42px; padding: 0 16px;
+      border-radius: 99px; border: 1px solid rgba(115,240,180,.45);
+      background: rgba(8,14,24,.92); color: var(--accent);
+      font-size: 12px; letter-spacing: .1em; font-weight: 700;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 10px 30px rgba(0,0,0,.5);
+    }
+    #drawer::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  }
+  @media (max-height: 560px) and (min-width: 821px) {
+    .head { padding-top: 14px; }
+    h1 { font-size: 22px; }
+    .lede { display: none; }
+    .hud { margin-top: 12px; }
+    .primary { height: 40px; margin-top: 10px; }
+    .controls { padding-top: 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="stage" aria-label="塌陷回廊试玩画面"></div>
+
+<aside id="panel" aria-label="调参面板">
+  <div class="head">
+    <div class="eyebrow">2.9 · P4.0 样板房</div>
+    <h1>塌陷回廊</h1>
+    <p class="lede">出口锁着，钥匙散在地面与空中。地面每 4 秒塌一段 —— 先跑，还是先拿？</p>
+  </div>
+
+  <div class="hud" role="status" aria-live="off">
+    <div class="stat"><span>用时</span><b id="tTime">0.0s</b></div>
+    <div class="stat"><span>魂晶</span><b id="tKeys">0/3</b></div>
+    <div class="stat"><span>已塌</span><b id="tSeg">0/8</b></div>
+    <div class="stat"><span>掉落</span><b id="tFall">0</b></div>
+  </div>
+
+  <button id="restart" class="primary" type="button">重开 <kbd>R</kbd></button>
+  <div id="error" hidden></div>
+  <div id="deathNote" hidden>你倒下了 · 按 R 重开（本局不计入统计）</div>
+
+  <section class="controls" aria-label="参数">
+    <div class="group-title">现场调参 <em>改完自动重开</em></div>
+
+    <label class="field" for="diff">
+      <span class="field-head"><span>难度（套用该难度默认值）</span><output id="diffVal">普通</output></span>
+      <select id="diff">
+        <option value="easy">简单</option>
+        <option value="normal" selected>普通</option>
+        <option value="hard">困难</option>
+        <option value="hell">地狱</option>
+      </select>
+    </label>
+
+    <label class="field" for="skel">
+      <span class="field-head"><span>骨架（2.9.1 起三种都能挂塌陷）</span><output id="skelVal">平厅</output></span>
+      <select id="skel">
+        <option value="flat" selected>平厅</option>
+        <option value="double">双层（上层半程崩塌）</option>
+        <option value="bridge">断桥（缺口＝已塌块）</option>
+      </select>
+    </label>
+
+    <label class="field" for="seg">
+      <span class="field-head"><span>地面段数</span><output id="segVal">8</output></span>
+      <input id="seg" type="range" min="4" max="10" step="1" value="8" />
+    </label>
+
+    <label class="field" for="int">
+      <span class="field-head"><span>塌陷间隔</span><output id="intVal">4.0s</output></span>
+      <input id="int" type="range" min="2.4" max="6" step="0.1" value="4" />
+    </label>
+
+    <label class="field" for="need">
+      <span class="field-head"><span>魂晶需求</span><output id="needVal">3</output></span>
+      <input id="need" type="range" min="2" max="5" step="1" value="3" />
+    </label>
+
+    <label class="field" for="warn">
+      <span class="field-head"><span>预警时长</span><output id="warnVal">0.8s</output></span>
+      <input id="warn" type="range" min="0.4" max="1.4" step="0.1" value="0.8" />
+    </label>
+  </section>
+
+  <section id="result" class="card" hidden aria-live="polite">
+    <div class="card-head"><b>本局</b><span class="result-tag" id="resTag">通关</span></div>
+    <dl class="stats" id="resList"></dl>
+  </section>
+
+  <div id="advice"></div>
+
+  <section class="card" aria-label="累计统计">
+    <div class="card-head"><b>累计</b><span id="cumN">0 局</span></div>
+    <dl class="stats" id="cumList"></dl>
+  </section>
+
+  <div class="actions">
+    <button id="export" type="button">导出 JSON</button>
+    <button id="copy" type="button">复制 JSON</button>
+    <button id="resetStats" class="ghost" type="button">清空统计</button>
+    <button id="rerunPeek" class="ghost" type="button">再玩一局</button>
+  </div>
+
+  <p class="hint">
+    <b>健康判据</b>（2.9.3 改，见反馈 §5.3）：<b>开门时剩余段 3~5</b>（主指标）·
+    用时 10~25s（P90 &lt; 35s）· 强制解锁 0% · 掉落率 10%~30% ·
+    多拿率 20%~50% · 读条被打断 0.5~3 次。<br />
+    为什么不再用"平均用时"当主指标：钥匙是固定投放的，玩家拿满 3 颗就走，
+    用时≈跑图+读条，跟塌陷压力基本无关。<br />
+    本页是调参工具，不接入主游戏流程；R 随时重开。
+  </p>
+</aside>
+
+<button id="drawer" type="button" aria-expanded="false" aria-controls="panel">面板</button>
+
+<script src="../vendor/phaser.min.js?v=20261024"></script>
+<script src="../角色形象.js?v=20261024"></script>
+<script src="../战斗2D.js?v=20261024"></script>
+<script>
+(function () {
+  'use strict';
+
+  var A = window.战斗2D;
+  var $ = function (id) { return document.getElementById(id); };
+  var stage = $('stage'), panel = $('panel'), drawer = $('drawer');
+  var errBox = $('error');
+  var params = { segments: 8, interval: 4000, warn: 800, need: 3 };
+  var booted = false, booting = false, polling = null, lastResultCount = 0;
+  var restartQueued = false;
+
+  function fail(msg) {
+    if (!errBox) return;
+    errBox.hidden = false;
+    errBox.textContent = msg;
+  }
+  function clearFail() { if (errBox) { errBox.hidden = true; errBox.textContent = ''; } }
+
+  var DIFF_CN = { easy: '简单', normal: '普通', hard: '困难', hell: '地狱' };
+  // 默认值直接从引擎读（API.getMechanicDefaults），不再手抄一份 MECH_DIFF ——
+  // 手抄的那份只要引擎改了就会悄悄过期（下面这组只在引擎还没起来时兜底，
+  // 普通 = 实测出来的 8 段 / 4.0s / 3 颗 / 0.8s 预警）。
+  var DIFF_FALLBACK = {
+    easy:   { segments: 6,  interval: 5.5, warn: 1.0, need: 2 },
+    normal: { segments: 8,  interval: 4.0, warn: 0.8, need: 3 },
+    hard:   { segments: 9,  interval: 3.4, warn: 0.7, need: 3 },
+    hell:   { segments: 10, interval: 2.8, warn: 0.6, need: 4 }
+  };
+  function diffDefaults() {
+    try {
+      if (A && typeof A.getMechanicDefaults === 'function') {
+        var raw = A.getMechanicDefaults();
+        if (raw && raw.normal) {
+          var out = {};
+          Object.keys(raw).forEach(function (k) {
+            var r = raw[k];
+            out[k] = { segments: r.segments, interval: r.interval / 1000, warn: r.warn / 1000, need: r.need };
+          });
+          return out;
+        }
+      }
+    } catch (e) { /* 引擎没起来就退兜底 */ }
+    return DIFF_FALLBACK;
+  }
+  function applyDiffDefaults(diff) {
+    var all = diffDefaults();
+    var d = all[diff] || all.normal;
+    $('seg').value = d.segments;
+    $('int').value = d.interval;
+    $('warn').value = d.warn;
+    $('need').value = d.need;
+  }
+
+  var SKEL_CN = { flat: '平厅', double: '双层', bridge: '断桥' };
+  function readParams() {
+    params.difficulty = ($('diff') && $('diff').value) || 'normal';
+    params.skeleton = ($('skel') && $('skel').value) || 'flat';
+    params.segments = +$('seg').value;
+    params.interval = Math.round(+$('int').value * 1000);
+    params.warn = Math.round(+$('warn').value * 1000);
+    params.need = +$('need').value;
+    $('diffVal').textContent = DIFF_CN[params.difficulty] || params.difficulty;
+    $('skelVal').textContent = SKEL_CN[params.skeleton] || params.skeleton;
+    $('segVal').textContent = params.segments;
+    $('intVal').textContent = (params.interval / 1000).toFixed(1) + 's';
+    $('warnVal').textContent = (params.warn / 1000).toFixed(1) + 's';
+    $('needVal').textContent = params.need;
+  }
+
+  function startEngineRun() {
+    return A.startRun({
+      heroName: '回廊测试', points: 0,
+      player: { maxHp: 400, hp: 400, attack: 12, dodge: 0 },
+      difficulty: params.difficulty, heroId: 'warrior',
+      skill: { id: 'warrior' }, curses: [], environment: null
+    });
+  }
+
+  function startRunThenRoom() {
+    if (!A) { fail('战斗2D 引擎未加载：请确认 ../vendor/phaser.min.js 与 ../战斗2D.js 存在。'); return; }
+    clearFail();
+    readParams();
+    if (!booted) {
+      if (booting) return;
+      booting = true;
+      var ok = false;
+      try { ok = A.init(stage, true); } catch (e) { fail('引擎初始化异常：' + e); booting = false; return; }
+      if (!ok) { fail('引擎初始化失败：' + (A.lastError() || '未知原因')); booting = false; return; }
+      A.show();
+      booted = true;
+      booting = false;
+    }
+    function ready() {
+      var d = A.debug();
+      if (!d.ready) return false;
+      if (!d.running || d.difficulty !== params.difficulty) {
+        startEngineRun();
+        return false;
+      }
+      return true;
+    }
+    function tryBoot() {
+      if (!ready()) { setTimeout(tryBoot, 120); return; }
+      startRoom();
+    }
+    tryBoot();
+  }
+
+  function startRoom() {
+    if (!A || !A.isReady()) { setTimeout(startRoom, 120); return; }
+    readParams();
+    var d = A.debug();
+    if ((d.hero && d.hero.dead) || d.difficulty !== params.difficulty) {
+      // 上一局战死 / 切了难度：重新起一局，避免死亡面板或旧难度挡住画面
+      startEngineRun();
+      setTimeout(startRoom, 250);
+      return;
+    }
+    var ok = A.startDebugRoom({
+      floor: 10,
+      skeleton: params.skeleton,
+      segments: params.segments,
+      interval: params.interval,
+      warn: params.warn,
+      need: params.need,
+      crystalCount: Math.max(5, params.need + 2),
+      maxEnemies: 3
+    });
+    if (!ok) { fail('单个房间启动失败：引擎尚未就绪。'); return; }
+    $('result').hidden = true;
+    $('result').classList.remove('forced');
+    $('advice').textContent = '';
+    $('deathNote').hidden = true;
+    hideResult();
+    // 记录当前累计局数，用来判断"本局是否已结束"
+    lastResultCount = (A.getCollapseRecords() || []).length;
+    startPolling();
+  }
+
+  function hideResult() {
+    $('result').hidden = true;
+    $('resList').innerHTML = '';
+    $('resTag').textContent = '通关';
+  }
+
+  var _lastUi = '';
+  var _cumKey = '';
+  function startPolling() {
+    if (polling) return;
+    polling = setInterval(function () {
+      if (!A) return;
+      var d = A.debug();
+      if (!d.ready) return;
+      var c = d.collapse;
+      if (!c) return;
+      var time = c.elapsed || 0;
+      var keys = c.got + '/' + c.need;
+      var seg = c.collapsed + '/' + c.segments;
+      $('tTime').textContent = time.toFixed(1) + 's';
+      $('tKeys').textContent = keys;
+      $('tSeg').textContent = seg;
+      $('tFall').textContent = c.falls;
+      $('tKeys').className = c.unlocked ? 'good' : (c.got > 0 ? 'hot' : '');
+      $('tSeg').className = c.collapsed >= c.segments - 1 ? 'bad' : (c.collapsed > 0 ? 'hot' : '');
+      $('tFall').className = c.falls > 0 ? 'bad' : '';
+
+      var recs = A.getCollapseRecords() || [];
+      if (recs.length > lastResultCount || c.result) {
+        var r = c.result || recs[recs.length - 1];
+        if (r) { showResult(r); lastResultCount = recs.length; }
+      }
+      var ck = recs.length + '|' + (recs.length ? recs[recs.length - 1].time : '');
+      if (ck !== _cumKey) { _cumKey = ck; renderCumulative(recs); }
+      $('deathNote').hidden = !(d.hero && d.hero.dead);
+    }, 100);
+  }
+
+  function fmt1(n) { return (Math.round(n * 10) / 10).toFixed(1); }
+
+  function showResult(r) {
+    var box = $('result');
+    box.hidden = false;
+    box.classList.toggle('forced', !!r.forced);
+    $('resTag').textContent = r.reason === 'collapsed' ? '被塌陷抛出' : (r.forced ? '强制解锁' : '解封撤离');
+    var rows = [
+      ['难度', DIFF_CN[r.difficulty] || r.difficulty || '普通'],
+      ['用时', r.time + 's'],
+      ['魂晶', r.collected + '/' + r.need],
+      ['掉落', r.falls + ' 次'],
+      ['读条被打断', r.interrupts + ' 次'],
+      ['击杀', r.kills],
+      ['受伤', r.damage],
+      ['开门时剩余段', r.exitCollapsed],
+      ['多拿率', (r.need ? Math.round((r.collected - r.need) / r.need * 100) : 0) + '%']
+    ];
+    $('resList').innerHTML = rows.map(function (row) {
+      return '<div><dt>' + row[0] + '</dt><dd>' + row[1] + '</dd></div>';
+    }).join('');
+    try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* 忽略 */ }
+  }
+
+  function sum(arr, fn) { var s = 0; for (var i = 0; i < arr.length; i++) s += fn(arr[i]); return s; }
+
+  function renderCumulative(recs) {
+    var n = recs.length;
+    $('cumN').textContent = n + ' 局';
+    if (!n) {
+      $('cumList').innerHTML = '<div><dt>还没有记录</dt><dd>—</dd></div>';
+      return;
+    }
+    var times = recs.map(function (r) { return r.time; });
+    var avgT = sum(recs, function (r) { return r.time; }) / n;
+    var minT = Math.min.apply(null, times);
+    var maxT = Math.max.apply(null, times);
+    var p90T = percentile(times, 0.9);
+    var forced = recs.filter(function (r) { return r.forced; }).length;
+    var falls = recs.filter(function (r) { return r.falls > 0; }).length;
+    var avgKeys = sum(recs, function (r) { return r.collected; }) / n;
+    var avgInt = sum(recs, function (r) { return r.interrupts; }) / n;
+    var avgKills = sum(recs, function (r) { return r.kills; }) / n;
+    // 2.9.2 §5.3：主指标换成「开门时剩余段数」—— 它才反映塌陷压力；
+    // 「多拿率」反映"多拿有没有动力"（实测 0%，说明钥匙一拿到就走）。
+    var avgExit = sum(recs, function (r) { return r.exitCollapsed || 0; }) / n;
+    var extraRate = sum(recs, function (r) {
+      return r.need ? (r.collected - r.need) / r.need : 0;
+    }) / n;
+    var segTotal = recs[0].params && recs[0].params.segments ? recs[0].params.segments : null;
+
+    // 判据：ok / warn / bad 三档（bad 只给"必须改"的那一档）
+    var exitCls = avgExit > 6 ? 'warn' : (avgExit < 2 ? 'bad' : 'ok');
+    var rows = [
+      ['开门时剩余段', fmt1(avgExit) + ' 段' + (segTotal ? ' / ' + segTotal : ''), exitCls],
+      ['平均用时', fmt1(avgT) + 's', avgT < 10 || avgT > 25 ? 'warn' : 'ok'],
+      ['用时 P90', fmt1(p90T) + 's', p90T > 35 ? 'warn' : 'ok'],
+      ['最快 / 最慢', fmt1(minT) + ' / ' + fmt1(maxT) + 's', ''],
+      ['强制解锁率', Math.round(forced / n * 100) + '%', forced > 0 ? 'warn' : 'ok'],
+      ['掉落率', Math.round(falls / n * 100) + '%', falls / n < 0.10 || falls / n > 0.30 ? 'warn' : 'ok'],
+      ['多拿率', Math.round(extraRate * 100) + '%', extraRate < 0.20 || extraRate > 0.50 ? 'warn' : 'ok'],
+      ['读条被打断', fmt1(avgInt) + ' 次/局', avgInt < 0.5 || avgInt > 3 ? 'warn' : 'ok'],
+      ['平均收集', fmt1(avgKeys) + ' 颗', ''],
+      ['平均击杀', fmt1(avgKills) + ' 只', '']
+    ];
+    $('cumList').innerHTML = rows.map(function (row) {
+      return '<div><dt>' + row[0] + '</dt><dd class="' + row[2] + '">' + row[1] + '</dd></div>';
+    }).join('');
+    renderAdvice({
+      n: n, avgT: avgT, p90T: p90T, forced: forced / n, falls: falls / n,
+      avgKeys: avgKeys, avgInt: avgInt, avgExit: avgExit, extraRate: extraRate
+    });
+  }
+
+  /** 第 p 分位（0~1）：只有 16 局时 P90 也要能算，不插值，取最近的顺序统计量 */
+  function percentile(arr, p) {
+    var a = arr.slice().sort(function (x, y) { return x - y; });
+    if (!a.length) return 0;
+    var i = Math.min(a.length - 1, Math.max(0, Math.ceil(p * a.length) - 1));
+    return a[i];
+  }
+
+  function renderAdvice(m) {
+    var tips = [];
+    if (m.n < 5) { $('advice').innerHTML = ''; return; }
+    // 两条"必须改"的排在最前面（§5.3：主指标是剩余段数）
+    if (m.avgExit > 6) tips.push('<b>没有压力</b>：开门时还剩 ' + fmt1(m.avgExit) + ' 段 —— 缩短塌陷间隔，或把钥匙放到房间后半段。');
+    if (m.avgExit < 2) tips.push('<b>太赶</b>：只剩 ' + fmt1(m.avgExit) + ' 段 —— 放慢塌陷或需求 −1（再压下去强制解锁率会涨）。');
+    if (m.forced > 0) tips.push('<b>出现强制解锁</b>：需求 −1 / 加钥匙 / 放慢塌陷间隔。');
+    if (m.extraRate < 0.20) tips.push('<b>多拿没动力</b>：玩家刚好拿满就走 —— 把钥匙放得更靠后，让"多拿一颗"有代价也有回报。');
+    if (m.extraRate > 0.50) tips.push('<b>都去贪了</b>：空中钥匙太好拿或读条太短，把成本抬一点。');
+    if (m.avgT > 25 || m.p90T > 35) tips.push('<b>节奏偏慢</b>：缩短塌陷间隔（或减少房间长度）。');
+    if (m.avgT < 10) tips.push('<b>节奏偏快</b>：检查钥匙是不是全挤在门口。');
+    if (m.falls < 0.10) tips.push('<b>压力不足</b>：一次没掉下去说明塌陷追不上玩家，缩短间隔。');
+    if (m.falls > 0.30) tips.push('<b>过于苛刻</b>：放慢塌陷 / 减少干扰怪。');
+    if (m.avgInt < 0.5) tips.push('<b>怪没起作用</b>：刷怪更快或更靠近钥匙。');
+    $('advice').innerHTML = tips.slice(0, 2).join('<br />');
+  }
+
+  function exportJSON() {
+    var recs = A ? (A.getCollapseRecords() || []) : [];
+    var data = {
+      version: '2.9',
+      generatedAt: new Date().toISOString(),
+      params: params,
+      runs: recs,
+      summary: summarize(recs)
+    };
+    return JSON.stringify(data, null, 2);
+  }
+
+  function summarize(recs) {
+    var n = recs.length;
+    if (!n) return { runs: 0 };
+    var times = recs.map(function (r) { return r.time; });
+    var avg = sum(recs, function (r) { return r.time; }) / n;
+    return {
+      runs: n,
+      avgTime: Math.round(avg * 10) / 10,
+      minTime: Math.min.apply(null, times),
+      maxTime: Math.max.apply(null, times),
+      forcedRate: Math.round(recs.filter(function (r) { return r.forced; }).length / n * 1000) / 1000,
+      fallRate: Math.round(recs.filter(function (r) { return r.falls > 0; }).length / n * 1000) / 1000,
+      avgCollected: Math.round(sum(recs, function (r) { return r.collected; }) / n * 100) / 100,
+      // 2.9.2 §5.3 新增的两项：主指标（剩余段）与"多拿动力"
+      avgExitRemaining: Math.round(sum(recs, function (r) { return r.exitCollapsed || 0; }) / n * 100) / 100,
+      extraRate: Math.round(sum(recs, function (r) {
+        return r.need ? (r.collected - r.need) / r.need : 0;
+      }) / n * 1000) / 1000,
+      timeP90: Math.round(percentile(times, 0.9) * 10) / 10,
+      // 被困率：塌陷房没有浮台，这一项恒 0（2.9.2 起标为废弃）。
+      // 保留字段是因为「双层 × 塌陷」上线后它会重新有意义（上层有寿命，见 C.deck）。
+      trappedRate: Math.round(recs.filter(function (r) { return r.trappedMs > 0; }).length / n * 1000) / 1000,
+      avgInterrupts: Math.round(sum(recs, function (r) { return r.interrupts; }) / n * 100) / 100
+    };
+  }
+
+  function download() {
+    var text = exportJSON();
+    var blob = new Blob([text], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'collapse-room-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  function copyJSON() {
+    var text = exportJSON();
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) { /* 忽略 */ }
+      ta.remove();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(fallback);
+    } else fallback();
+  }
+
+  function queueRestart() {
+    if (restartQueued) return;
+    restartQueued = true;
+    setTimeout(function () { restartQueued = false; startRoom(); }, 120);
+  }
+
+  // ---------- 事件 ----------
+  $('restart').addEventListener('click', startRoom);
+  $('rerunPeek').addEventListener('click', startRoom);
+  $('diff').addEventListener('change', function () {
+    applyDiffDefaults(this.value);
+    readParams();
+    queueRestart();
+  });
+  $('skel').addEventListener('change', function () {
+    // 换骨架就套该格子的默认参数（断桥：块数 −2、间隔 ×1.125，和引擎 startMechanic 一致）
+    if (this.value === 'bridge') {
+      var base = diffDefaults()[($('diff') && $('diff').value) || 'normal'] || diffDefaults().normal;
+      $('seg').value = Math.max(4, base.segments - 2);
+      $('int').value = Math.round(base.interval * 1.125 * 10) / 10;
+    } else {
+      applyDiffDefaults(($('diff') && $('diff').value) || 'normal');
+    }
+    readParams();
+    queueRestart();
+  });
+  ['seg', 'int', 'need', 'warn'].forEach(function (id) {
+    var el = $(id);
+    el.addEventListener('input', readParams);
+    el.addEventListener('change', queueRestart);
+  });
+  $('export').addEventListener('click', download);
+  $('copy').addEventListener('click', copyJSON);
+  $('resetStats').addEventListener('click', function () {
+    if (A) A.clearCollapseRecords();
+    lastResultCount = 0;
+    hideResult();
+    renderCumulative([]);
+    $('advice').textContent = '';
+  });
+
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+    if (e.key === 'r' || e.key === 'R') { e.preventDefault(); startRoom(); }
+  });
+
+  drawer.addEventListener('click', function () {
+    var open = panel.classList.toggle('open');
+    drawer.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // 面板开合会改变画布可用区域，通知引擎重新取尺寸
+    setTimeout(function () { window.dispatchEvent(new Event('resize')); }, 300);
+  });
+
+  window.addEventListener('resize', function () {
+    // 引擎自身监听 ScaleManager；这里只是让 stage 的布局在抽屉动画后重排
+  });
+
+  // ---------- 启动 ----------
+  readParams();
+  renderCumulative([]);
+  startRunThenRoom();
+
+  // 供自动化测试读取
+  window.__collapsePreview = {
+    params: params,
+    restart: startRoom,
+    exportJSON: exportJSON,
+    records: function () { return A ? A.getCollapseRecords() : []; }
+  };
+})();
+</script>
+</body>
+</html>

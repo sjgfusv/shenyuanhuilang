@@ -20,10 +20,10 @@
     <meta name="format-detection" content="telephone=no" />
     <link rel="manifest" href="manifest.webmanifest" />
     <title>深渊回廊</title>
-    <link rel="stylesheet" href="主样式.css?v=202611005" />
+    <link rel="stylesheet" href="主样式.css?v=20261026-294" />
     <!-- defer：音频引擎是 43 KB，不阻塞首屏渲染；defer 脚本按文档顺序执行，
          它在 <head> 里最靠前，所以仍会先于 主程序.js 跑完 —— 时序与原来一致。 -->
-    <script src="AbyssAudio.js?v=202611005" defer></script>
+    <script src="AbyssAudio.js?v=20261026-294" defer></script>
   </head>
   <body>
     <!-- ===== 全局特效层 ===== -->
@@ -45,7 +45,7 @@
         </div>
         <div class="start-subtitle">— 咕咕嘎嘎 —</div>
         <button id="startGameBtn" class="start-button">开始游戏</button>
-        <div class="start-version">v2.8.3 by heshen</div>                     <!--更新记得版本号！！！-->
+        <div class="start-version">v2.9.4 by heshen</div>                     <!--更新记得版本号！！！-->
       </div>
       <canvas id="startFxCanvas" class="start-fx-canvas" aria-hidden="true"></canvas>
       <div class="start-cursor-glow" id="startCursorGlow" aria-hidden="true"></div>
@@ -95,7 +95,7 @@
     <div class="app-shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">by heshen v2.8.3</p>                             <!--更新记得版本号！！！-->
+          <p class="eyebrow">by heshen v2.9.4</p>                             <!--更新记得版本号！！！-->
           <h1>深渊回廊</h1>
         </div>
         <div class="topbar-controls">
@@ -744,7 +744,7 @@
          defer：不阻塞 HTML 解析，星空开始界面立刻出现。
          它的启动逻辑本来就挂在 DOMContentLoaded（主程序.js 行 9987 / 12519），
          而 defer 脚本在 DOMContentLoaded 之前执行完，时序天然兼容。 -->
-    <script src="主程序.js?v=202611005" defer></script>
+    <script src="主程序.js?v=20261026-294" defer></script>
     <!-- 试炼文字界面已随试炼关停整体移除（P5 · 规划 §7）。
          2D 画布层不在这里 —— 它已经搬到 </body> 之前，现在它就是主画面。 -->
 
@@ -933,10 +933,10 @@
     'use strict';
 
     var FILES = [
-      'vendor/phaser.min.js?v=202611005',
-      '角色形象.js?v=202611005',
-      '战斗2D.js?v=202611005',
-      '经典2D.js?v=202611005'
+      'vendor/phaser.min.js?v=20261026-294',
+      '角色形象.js?v=20261026-294',
+      '战斗2D.js?v=20261026-294',
+      '经典2D.js?v=20261026-294'
     ];
 
     var 加载中 = null;        // 进行中的 Promise（复用，避免重复下载）

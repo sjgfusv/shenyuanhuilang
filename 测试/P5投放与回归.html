@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>深渊回廊 · 2.9 P5 投放与回归</title>
+<style>
+  body { margin: 0; background: #0a0e18; color: #e8eefc; font-family: "Microsoft YaHei", system-ui, sans-serif; }
+  #stage { position: fixed; inset: 0; }
+  #panel {
+    position: fixed; left: 12px; top: 12px; z-index: 10;
+    max-width: 720px; max-height: 92vh; overflow: auto;
+    background: rgba(15,22,44,.94); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 12px; padding: 14px 16px; font-size: 13px; line-height: 1.65;
+  }
+  h1 { font-size: 15px; margin: 0 0 8px; color: #f0d06a; letter-spacing: .05em; }
+  .ok { color: #73f0b4; } .bad { color: #ff5d7a; } .dim { color: #90a2c8; }
+  pre { margin: 0; white-space: pre-wrap; }
+  button { margin-top: 8px; padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(115,240,180,.4);
+    background: rgba(115,240,180,.12); color: #73f0b4; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="panel">
+  <h1>2.9 · P5 投放与回归（100 房无死锁）</h1>
+  <div class="dim">验收口径（施工清单 §8.2）：骨架 / 机制占比、100 房连续生成无死锁、图鉴与运行时同源。</div>
+  <button id="rerun">重新跑一遍</button>
+  <pre id="out">准备中…</pre>
+</div>
+<script src="../vendor/phaser.min.js?v=20261024"></script>
+<script src="../角色形象.js?v=20261024"></script>
+<script src="../战斗2D.js?v=20261024"></script>
+<script>
+(function () {
+  var out = document.getElementById('out');
+  var lines = [], pass = 0, fail = 0;
+  function log(s, cls) { lines.push(cls ? '<span class="' + cls + '">' + s + '</span>' : s); out.innerHTML = lines.join('\n'); }
+  function section(t) { lines.push(''); log('── ' + t + ' ──', 'dim'); }
+  function assert(cond, msg, extra) {
+    if (cond) { pass++; log('  ✓ ' + msg, 'ok'); }
+    else { fail++; log('  ✗ ' + msg + (extra != null ? '  → ' + extra : ''), 'bad'); }
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  var A = window.战斗2D;
+  var bootTimer = null, running = false;
+  function schedule(d) { if (bootTimer) return; bootTimer = setTimeout(function () { bootTimer = null; run(); }, d); }
+
+  async function run() {
+    if (running) return;
+    running = true;
+    try {
+      lines = []; pass = 0; fail = 0;
+      A = window.战斗2D;
+      log('引擎: ' + (A ? '已加载' : '未加载'), A ? 'ok' : 'bad');
+      if (!A) return;
+      var d0 = A.debug();
+      if (!d0.ready) {
+        if (!d0.booted) {
+          var ok = false;
+          try { ok = A.init(document.getElementById('stage'), true); } catch (e) { log('init 异常：' + e, 'bad'); return; }
+          if (ok) A.show();
+        }
+        running = false; schedule(120); return;
+      }
+
+      var s = A.getGame().scene.getScene('TrialBattle');
+      A.setGodMode(true);
+      A.setFloorPlan({ rooms: ['enemy', 'enemy', 'boss'] });
+      A.startRun({
+        heroName: 'P5验收', points: 0,
+        player: { maxHp: 500, hp: 500, attack: 12, dodge: 0 },
+        difficulty: 'normal', heroId: 'warrior',
+        skill: { id: 'warrior' }, curses: [], environment: null
+      });
+      await sleep(320);
+
+      /* ---------- 1. 图鉴同源 ---------- */
+      section('1. 图鉴数据来自运行时常量');
+      var codex = A.getCodexData();
+      assert(codex && codex.entries && codex.entries.length >= 9, '图鉴「地形与机制」条目 ≥9', codex && codex.entries && codex.entries.length);
+      var titles = (codex.entries || []).map(function (e) { return e.title; });
+      // 2.9.2 起守点改名为「守点 · 守住核心」：按前缀匹配，避免以后标题再改就误报
+      ['地形骨架：平厅 / 双层 / 断桥', '塌陷', '守点', '限时', '三色魂晶', '低血急救', '踩头弹跳'].forEach(function (t) {
+        assert(titles.some(function (x) { return x.indexOf(t) >= 0; }), '包含条目：' + t);
+      });
+      var collapseEntry = (codex.entries || []).filter(function (e) { return e.title === '塌陷'; })[0];
+      assert(collapseEntry && collapseEntry.description.indexOf('每 4s') >= 0,
+        '塌陷说明使用普通档 4 秒（不是手抄的旧数字）', collapseEntry && collapseEntry.description.slice(0, 40));
+
+      /* ---------- 2. 100 房随机生成 + 可完成 ---------- */
+      section('2. 100 房连续生成：骨架 / 机制分布 + 无死锁');
+      var skCount = { flat: 0, double: 0, bridge: 0 };
+      var mechCount = { none: 0, collapse: 0, hold: 0, timed: 0 };
+      var errors = 0, incomplete = 0;
+      var types = ['enemy', 'enemy', 'elite', 'mirror', 'enemy', 'start'];
+
+      function finishRoom() {
+        // 清怪（直接 killEnemy，铁壁兵也不会挡）
+        s.enemies.forEach(function (e) {
+          if (e && e.alive) { e.hp = 0; s.killEnemy(e); }
+        });
+        if (s.collapse) {
+          s.collapse.spawnAt = 1e15;
+          var keys = s.crystals.filter(function (c) { return c.isKey && !c.taken; });
+          var need = s.roomObjective ? s.roomObjective.need : 3;
+          for (var i = 0; i < need && i < keys.length; i++) s.takeCrystal(keys[i]);
+          if (!s.collapse.unlocked) s.collapseWarnGroup(s.collapse.order[s.collapse.order.length - 1]);
+        }
+        if (s.holdZone && !s.holdZone.unlocked) s.unlockHold();
+        if (s.timedRoom && s.roomObjective && !s.roomObjective.done) {
+          s.roomObjective.done = true;
+          s.checkFloorClear(true);
+        }
+        if (!s.portalOpen) s.checkFloorClear(true);
+        return s.portalOpen;
+      }
+
+      for (var i = 0; i < 100; i++) {
+        try {
+          s.floorMap.floor = 20;
+          s.floor = 20;
+          // 先把保底计数设为 1：本页测的是"正常投放率"，
+          // 每 5 层第 2 间的强制保底由 P4 专项单独验。
+          s._floorMechanicCount = 1;
+          var type = types[i % types.length];
+          var node = { type: type, col: 1 + (i % 3), row: 1 };
+          s.buildLevel(node);
+          var sk = s.roomSkeleton || 'flat';
+          skCount[sk] = (skCount[sk] || 0) + 1;
+          var mk = s._roomMechanic || 'none';
+          mechCount[mk] = (mechCount[mk] || 0) + 1;
+          if (!finishRoom()) incomplete++;
+        } catch (e) {
+          errors++;
+          if (errors <= 3) log('  房间 #' + i + ' 异常：' + e.message, 'bad');
+        }
+      }
+      assert(errors === 0, '100 房生成 / 完成无异常', errors);
+      assert(incomplete === 0, '100 房全部能打开出口（无死锁）', incomplete);
+      log('  骨架分布：' + JSON.stringify(skCount), 'dim');
+      log('  机制分布：' + JSON.stringify(mechCount), 'dim');
+      assert(skCount.flat > 0 && skCount.double > 0 && skCount.bridge > 0,
+        '平厅 / 双层 / 断桥都实际出现', JSON.stringify(skCount));
+      assert(mechCount.collapse > 0 && mechCount.hold > 0 && mechCount.timed > 0,
+        '塌陷 / 守点 / 限时都实际出现', JSON.stringify(mechCount));
+
+      /* ---------- 3. 机制房清空后无残留 ---------- */
+      section('3. 连续换房后机制对象不残留');
+      s.floorMap.floor = 20; s.floor = 20;
+      s.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+      assert(s.collapse === null && s.holdZone === null && s.timedRoom === null,
+        '换到普通房后没有残留机制对象',
+        JSON.stringify({ c: !!s.collapse, h: !!s.holdZone, t: !!s.timedRoom }));
+
+      /* ---------- 4. 难度参数（主系统） ---------- */
+      section('4. 普通 / 简单 / 地狱的机制参数');
+      s.difficulty = 'normal';
+      var n = s.mechanicParams('collapse', null);
+      s.difficulty = 'easy';
+      var e2 = s.mechanicParams('collapse', null);
+      s.difficulty = 'hell';
+      var h2 = s.mechanicParams('collapse', null);
+      s.difficulty = 'normal';
+      assert(n.segments === 8 && n.interval === 4000 && n.need === 3, '普通 8 段 / 4.0s / 3 颗', JSON.stringify(n));
+      assert(e2.need < n.need && e2.interval > n.interval, '简单：需求更少、塌陷更慢', JSON.stringify(e2));
+      assert(h2.need > n.need && h2.interval < n.interval, '地狱：需求更多、塌陷更快', JSON.stringify(h2));
+
+      /* ---------- 汇总 ---------- */
+      lines.push('');
+      log(fail === 0 ? ('全部通过：' + pass + ' 项') : ('通过 ' + pass + ' 项，失败 ' + fail + ' 项'),
+        fail === 0 ? 'ok' : 'bad');
+    } finally {
+      running = false;
+    }
+  }
+
+  document.getElementById('rerun').addEventListener('click', run);
+  window.addEventListener('load', function () { schedule(0); });
+  if (document.readyState === 'complete') schedule(0);
+})();
+</script>
+</body>
+</html>

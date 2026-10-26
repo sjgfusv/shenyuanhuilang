@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>probe · room-cleared duplicate</title>
+<style>body{margin:0;background:#0a0e18;color:#e8eefc;font-family:monospace}#stage{position:fixed;inset:0}#out{position:fixed;left:8px;top:8px;z-index:9;white-space:pre-wrap;font-size:13px}</style>
+</head>
+<body>
+<div id="stage"></div>
+<pre id="out">booting</pre>
+<script src="../vendor/phaser.min.js"></script>
+<script src="../角色形象.js"></script>
+<script src="../战斗2D.js"></script>
+<script>
+(function () {
+  var out = document.getElementById('out'), lines = [];
+  function log(s) { lines.push(s); out.textContent = lines.join('\n'); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  var A = window.战斗2D, sc = null, evt = 0;
+
+  async function boot() {
+    var d = A.debug();
+    if (!d.ready) {
+      if (!d.booted) { try { var ok = A.init(document.getElementById('stage'), true); if (ok) A.show(); } catch (e) { log('init err ' + e); return; } }
+      setTimeout(boot, 140); return;
+    }
+    sc = A.getGame().scene.getScene('TrialBattle');
+    A.setGodMode(true);
+    A.setFloorPlan({ rooms: ['enemy', 'enemy', 'enemy', 'enemy', 'boss'] });
+    A.startRun({ heroName: 'probe', points: 0, player: { maxHp: 500, hp: 500, attack: 12, dodge: 0 },
+      difficulty: 'normal', heroId: 'warrior', skill: { id: 'warrior' }, curses: [], environment: null });
+    await sleep(1500);
+    await probe();
+  }
+
+  async function probe() {
+    sc.game.events.on('rt:room-cleared', function () { evt++; });
+    sc.floorMap.floor = 10; sc.floor = 10;
+    sc._forceSkeleton = 'flat';
+    sc.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+    sc._forceSkeleton = null;
+    await sleep(300);
+
+    // 直接把怪清掉，触发开门
+    sc.enemies.forEach(function (e) { if (e && e.alive) { e.hp = 0; e.alive = false; if (e.sprite) e.sprite.setActive(false).setVisible(false); } });
+    sc.checkFloorClear();
+    await sleep(120);
+    log('① 清空后：portalOpen=' + sc.portalOpen + ' settled=' + sc._roomSettled +
+      ' awaitAck=' + sc._awaitClearAck + ' cleared=' + sc._floorRoomsCleared + ' evt=' + evt);
+
+    // 普通房默认过门结算：第一次过门结算并等宿主回话
+    sc.nextFloor();
+    await sleep(120);
+    log('② 过门待回话：portalOpen=' + sc.portalOpen + ' mapOpen=' + sc.mapOpen +
+      ' settled=' + sc._roomSettled + ' awaitAck=' + sc._awaitClearAck +
+      ' cleared=' + sc._floorRoomsCleared + ' evt=' + evt);
+    sc.ackRoomCleared();
+    await sleep(120);
+    log('②b ack 后：portalOpen=' + sc.portalOpen + ' mapOpen=' + sc.mapOpen +
+      ' cleared=' + sc._floorRoomsCleared + ' evt=' + evt);
+
+    // 关掉地图（玩家不选房间，直接把地图关了）
+    sc.closeMap();
+    await sleep(200);
+    log('③ 关地图后：portalOpen=' + sc.portalOpen + ' mapOpen=' + sc.mapOpen + ' cleared=' + sc._floorRoomsCleared + ' evt=' + evt);
+
+    log(evt === 1 && sc._floorRoomsCleared === 1 ? '>>> 通过：奖励只结算一次' : '>>> 失败：仍发生重复结算');
+    log('DONE');
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

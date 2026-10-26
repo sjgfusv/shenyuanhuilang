@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>probe · air dodge stamina</title>
+<style>body{margin:0;background:#0a0e18;color:#e8eefc;font-family:monospace}#stage{position:fixed;inset:0}#out{position:fixed;left:8px;top:8px;z-index:9;white-space:pre-wrap;font-size:13px}</style>
+</head>
+<body>
+<div id="stage"></div>
+<pre id="out">booting</pre>
+<script src="../vendor/phaser.min.js"></script>
+<script src="../角色形象.js"></script>
+<script src="../战斗2D.js"></script>
+<script>
+(function () {
+  var out = document.getElementById('out');
+  var lines = [];
+  function log(s) { lines.push(s); out.textContent = lines.join('\n'); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  var A = window.战斗2D, sc = null, booting = true;
+
+  async function boot() {
+    var d = A.debug();
+    if (!d.ready) {
+      if (!d.booted) { try { var ok = A.init(document.getElementById('stage'), true); if (ok) A.show(); } catch (e) { log('init err ' + e); return; } }
+      setTimeout(boot, 140); return;
+    }
+    sc = A.getGame().scene.getScene('TrialBattle');
+    A.setGodMode(true);
+    A.setFloorPlan({ rooms: ['enemy', 'enemy', 'enemy', 'enemy', 'boss'] });
+    A.startRun({ heroName: 'probe', points: 0, player: { maxHp: 500, hp: 500, attack: 12, dodge: 0 },
+      difficulty: 'normal', heroId: 'warrior', skill: { id: 'warrior' }, curses: [], environment: null });
+    await sleep(1500);
+    booting = false;
+    await probe();
+  }
+
+  async function probe() {
+    sc._forceSkeleton = 'flat';
+    sc.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+    sc._forceSkeleton = null;
+    await sleep(300);
+    var h = sc.hero;
+    log('DODGE.cost=' + A.debug().mech.dodgeCost + ' maxStamina=' + h.maxStamina);
+
+    // ---- A. 地面闪避 ----
+    h.body.reset(400, sc.groundY - 60);
+    await sleep(200);
+    var g0 = h.stamina;
+    sc.dodgeReadyAt = 0;
+    var okG = sc.tryDodge();
+    var g1 = h.stamina;
+    log('地面: onGround=' + (h.body.blocked.down || h.body.touching.down) + ' try=' + okG + ' ' + g0.toFixed(1) + ' → ' + g1.toFixed(1));
+    await sleep(600);
+
+    // ---- B. 空中闪避 ----
+    h.stamina = h.maxStamina;
+    h.body.reset(400, sc.groundY - 240);
+    await sleep(80);
+    var onG = (h.body.blocked.down || h.body.touching.down);
+    var a0 = h.stamina;
+    sc.dodgeReadyAt = 0;
+    var okA = sc.tryDodge();
+    var a1 = h.stamina;
+    log('空中: onGround=' + onG + ' try=' + okA + ' ' + a0.toFixed(1) + ' → ' + a1.toFixed(1));
+    await sleep(120);
+    log('空中+120ms stamina=' + h.stamina.toFixed(1) + ' dodging=' + sc.dodging);
+    await sleep(600);
+    log('空中+720ms stamina=' + h.stamina.toFixed(1));
+
+    // ---- C. 空中连续闪（冷却后）----
+    h.stamina = h.maxStamina; h.body.reset(400, sc.groundY - 260); await sleep(60);
+    sc.dodgeReadyAt = 0; var c0 = h.stamina; sc.tryDodge(); var c1 = h.stamina;
+    await sleep(420); sc.dodgeReadyAt = 0; var c2 = h.stamina; sc.tryDodge(); var c3 = h.stamina;
+    log('连闪: ' + c0.toFixed(1) + ' → ' + c1.toFixed(1) + ' → ' + c2.toFixed(1) + ' → ' + c3.toFixed(1));
+
+    // ---- D. 空中完美闪避（体力回满）----
+    h.stamina = 40; h.body.reset(400, sc.groundY - 240); await sleep(60);
+    sc.dodgeReadyAt = 0; sc.tryDodge();
+    var before = h.stamina; sc.onPerfectDodge(); var after = h.stamina;
+    log('完美闪避: ' + before.toFixed(1) + ' → ' + after.toFixed(1) + '（设计如此：回满）');
+
+    // ---- E. 装了滞空之羽：空中闪避应当免费（设计如此）----
+    A.setRelics(['airFeather']);
+    await sleep(700);                                  // 等上一次闪避彻底结束，否则 tryDodge 会被 dodging 挡住
+    h.stamina = h.maxStamina; h.body.reset(400, sc.groundY - 240); await sleep(120);
+    sc.dodgeReadyAt = 0; var e0 = h.stamina; var okE = sc.tryDodge(); var e1 = h.stamina;
+    log('滞空之羽·空中: try=' + okE + ' ' + e0.toFixed(1) + ' → ' + e1.toFixed(1) + '（relicFx.airDodgeFree=' + sc.relicFx('airDodgeFree', 0) + '）');
+    // 地面仍然要扣
+    await sleep(600); h.stamina = h.maxStamina; h.body.reset(400, sc.groundY - 40); await sleep(200);
+    sc.dodgeReadyAt = 0; var f0 = h.stamina; sc.tryDodge(); var f1 = h.stamina;
+    log('滞空之羽·地面: ' + f0.toFixed(1) + ' → ' + f1.toFixed(1));
+    A.setRelics([]);
+
+    log('DONE');
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

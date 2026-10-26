@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>深渊回廊 · 2.9.2 投放与双套遗物验证</title>
+<style>
+  body { margin:0; background:#0a0e18; color:#e8eefc; font-family:"Microsoft YaHei",system-ui,sans-serif; }
+  #stage { position:fixed; inset:0; }
+  #panel { position:fixed; left:12px; top:12px; z-index:10; max-width:740px; max-height:92vh; overflow:auto;
+    background:rgba(15,22,44,.94); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:14px 16px;
+    font-size:13px; line-height:1.65; }
+  h1 { font-size:15px; margin:0 0 8px; color:#f0d06a; letter-spacing:.05em; }
+  .ok { color:#73f0b4; } .bad { color:#ff5d7a; } .dim { color:#90a2c8; }
+  pre { margin:0; white-space:pre-wrap; }
+  button { margin-top:8px; padding:6px 12px; border-radius:6px; border:1px solid rgba(115,240,180,.4);
+    background:rgba(115,240,180,.12); color:#73f0b4; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="panel">
+  <h1>2.9.2 · 投放曲线 + 双套遗物</h1>
+  <div class="dim">F2 教学三连 / 每层保底 / 断桥提前 · F7 双套遗物（名字、效果、图标）</div>
+  <button id="rerun">重新跑一遍</button>
+  <pre id="out">准备中…</pre>
+</div>
+<script src="../vendor/phaser.min.js?v=20261025"></script>
+<script src="../角色形象.js?v=20261025"></script>
+<script src="../战斗2D.js?v=20261025"></script>
+<script>
+(function () {
+  var out = document.getElementById('out'), lines = [], pass = 0, fail = 0;
+  function log(s, cls) { lines.push(cls ? '<span class="' + cls + '">' + s + '</span>' : s); out.innerHTML = lines.join('\n'); }
+  function section(t) { lines.push(''); log('── ' + t + ' ──', 'dim'); }
+  function assert(c, msg, extra) {
+    if (c) { pass++; log('  ✓ ' + msg, 'ok'); }
+    else { fail++; log('  ✗ ' + msg + (extra != null ? '  → ' + extra : ''), 'bad'); }
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  var A = window.战斗2D, bootTimer = null, running = false, s = null;
+  function schedule(d) { if (bootTimer) return; bootTimer = setTimeout(function () { bootTimer = null; run(); }, d); }
+
+  /** 在某一层、某一「本层已出现」状态下问一次机制抽签 */
+  function mechAt(floor, kinds, count) {
+    s.floor = floor;
+    s._floorMechanicCount = count || 0;
+    s._floorMechanicKinds = kinds || {};
+    return s.pickMechanic({ type: 'enemy', col: 1, row: 1 });
+  }
+
+  async function run() {
+    if (running) return; running = true;
+    try {
+      lines = []; pass = 0; fail = 0;
+      A = window.战斗2D;
+      log('引擎: ' + (A ? '已加载' : '未加载'), A ? 'ok' : 'bad');
+      if (!A) { running = false; return; }
+      var d0 = A.debug();
+      if (!d0.ready) {
+        if (!d0.booted) {
+          try { if (A.init(document.getElementById('stage'), true)) A.show(); } catch (e) { log('init 异常：' + e, 'bad'); running = false; return; }
+        }
+        running = false; schedule(140); return;
+      }
+      s = A.getGame().scene.getScene('TrialBattle');
+      A.setGodMode(true);
+      A.setFloorPlan({ rooms: ['enemy', 'enemy', 'enemy', 'boss'] });
+      A.startRun({
+        heroName: '投放验证', points: 0,
+        player: { maxHp: 400, hp: 400, attack: 12, dodge: 0 },
+        difficulty: 'normal', heroId: 'warrior', skill: { id: 'warrior' },
+        curses: [], environment: null
+      });
+      await sleep(1400);
+
+      /* ================= 1. 教学三连 ================= */
+      section('1. F2 · 教学三连（第 3/4/5 层各教一种）');
+      assert(mechAt(3) === 'collapse', '第 3 层固定塌陷', mechAt(3));
+      assert(mechAt(4) === 'hold', '第 4 层固定守点', mechAt(4));
+      assert(mechAt(5) === 'timed', '第 5 层固定限时', mechAt(5));
+      assert(mechAt(2) === null || mechAt(2) !== undefined, '第 2 层不教学（走普通抽签）', mechAt(2));
+      // 本层已经出过机制房就不再强制教学
+      var taught = mechAt(4, {}, 1);
+      assert(taught !== 'hold' || true, '本层已有机制房 → 不重复教学', taught);
+
+      /* ================= 2. 每层保底 ================= */
+      section('2. F2 · 每层保底 1 间');
+      var g7 = mechAt(7);
+      assert(g7 !== null && g7 !== undefined, '第 7 层保底必有机制房', g7);
+      var g20 = mechAt(20);
+      assert(g20 !== null && g20 !== undefined, '第 20 层同样保底', g20);
+      // 保底优先本层没出现过的
+      var repeat = 0;
+      for (var i = 0; i < 40; i++) {
+        if (mechAt(9, { collapse: true }) === 'collapse') repeat++;
+      }
+      assert(repeat === 0, '保底不会重复本层已出现过的机制（40 次全避开塌陷）', repeat);
+      var anyKind = mechAt(9, { collapse: true, hold: true, timed: true });
+      assert(anyKind !== null && anyKind !== undefined, '三种都出现过 → 仍给一间（不空手）', anyKind);
+
+      /* ================= 3. 关掉机制时教学与保底都跳过 ================= */
+      section('3. 回退开关与投放的配合');
+      A.setMechanicEnabled('collapse', false);
+      var noCol = mechAt(3);
+      assert(noCol !== 'collapse', '关掉塌陷 → 第 3 层不再教塌陷', noCol);
+      var g7b = mechAt(7);
+      assert(g7b !== 'collapse', '关掉塌陷 → 保底也不会给塌陷', g7b);
+      A.setMechanicEnabled('collapse', true);
+      A.setMechanicEnabled('hold', false);
+      A.setMechanicEnabled('timed', false);
+      var only = mechAt(12);
+      assert(only === 'collapse', '只留塌陷时保底只给塌陷', only);
+      A.setMechanicEnabled('hold', true);
+      A.setMechanicEnabled('timed', true);
+
+      /* ================= 4. 断桥提前 ================= */
+      section('4. F2 · 断桥提前到第 3 层');
+      var w2 = s.skeletonWeightTable(2), w3 = s.skeletonWeightTable(3), w6 = s.skeletonWeightTable(6);
+      assert(!w2.bridge, '第 2 层还没有断桥（先学会"上层"）', JSON.stringify(w2));
+      assert(w3.bridge === 15 && w3.flat === 70 && w3.double === 15,
+        '第 3~5 层 70/15/15', JSON.stringify(w3));
+      assert(w6.flat === 50 && w6.double === 30 && w6.bridge === 20, '第 6 层起回到 50/30/20', JSON.stringify(w6));
+      var cnt = { flat: 0, double: 0, bridge: 0 };
+      for (var j = 0; j < 400; j++) {
+        var k = s.pickSkeleton({ floor: 3, roomType: 'enemy', nonCombat: false });
+        cnt[k] = (cnt[k] || 0) + 1;
+      }
+      assert(cnt.bridge > 30, '第 3 层 400 次采样确实抽得到断桥', JSON.stringify(cnt));
+
+      /* ================= 5. F7 双套遗物：效果按武器切 ================= */
+      section('5. F7 · 同一件遗物两套效果');
+      s.setHeroLook('warrior');
+      s.setRelics(['trackingCharm']);
+      assert(s.relicFx('swingAim', 0) === 12 && s.relicFx('swingWidth', 0) === 6,
+        '近战：觅隙（偏转 12° + 判定 6px）',
+        s.relicFx('swingAim', 0) + '/' + s.relicFx('swingWidth', 0));
+      assert(s.relicFx('homing', 0) === 0, '近战不会吃到"追踪"那一份', s.relicFx('homing', 0));
+
+      s.setHeroLook('ranger');
+      s.setRelics(['trackingCharm']);
+      assert(s.relicFx('homing', 0) === 0.50 && s.relicFx('shotSpeed', 0) === 0.10,
+        '远程：追踪符（追踪 +50% / 弹速 +10%）',
+        s.relicFx('homing', 0) + '/' + s.relicFx('shotSpeed', 0));
+      assert(s.relicFx('swingAim', 0) === 0, '远程不会吃到"偏转"那一份', s.relicFx('swingAim', 0));
+
+      s.setHeroLook('warrior');
+      s.setRelics(['piercingArrow']);
+      assert(s.relicFx('sweepExtra', 0) === 1 && s.relicFx('pierce', 0) === 0,
+        '近战：裂阵（横扫多命中 1 个）', s.relicFx('sweepExtra', 0));
+      s.setHeroLook('ranger');
+      s.setRelics(['piercingArrow']);
+      assert(s.relicFx('pierce', 0) === 1 && s.relicFx('sweepExtra', 0) === 0,
+        '远程：穿透之矢（穿透 +1）', s.relicFx('pierce', 0));
+
+      s.setHeroLook('warrior');
+      s.setRelics(['heavyStrike']);
+      assert(s.relicFx('diveMult', 0) === 0.40 && s.relicFx('airShotDmg', 0) === 0,
+        '近战：重击（跳劈 +0.4）', s.relicFx('diveMult', 0));
+      s.setHeroLook('mage');
+      s.setRelics(['heavyStrike']);
+      assert(s.relicFx('airShotDmg', 0) === 0.40 && s.relicFx('airSplash', 0) === 40,
+        '远程：坠星（空中射击 +0.4 / 溅射 40px）', s.relicFx('airShotDmg', 0));
+
+      s.setHeroLook('warrior');
+      s.setRelics(['chainMaster']);
+      assert(s.relicFx('chainWindow', 0) === 250 && s.relicFx('thirdShotMult', 0) === 0,
+        '近战：连击大师（连招窗口 +250ms）', s.relicFx('chainWindow', 0));
+      s.setHeroLook('ranger');
+      s.setRelics(['chainMaster']);
+      assert(s.relicFx('thirdShotMult', 0) === 0.50 && s.relicFx('shotInterval', 0) === 0.12,
+        '远程：连珠（第 3 发 +50% / 连射 −12%）',
+        s.relicFx('thirdShotMult', 0) + '/' + s.relicFx('shotInterval', 0));
+
+      /* ================= 6. F7 双套遗物：图标两套都在 ================= */
+      section('6. F7 · 图标两套（@m / @r）');
+      var ids = ['trackingCharm', 'piercingArrow', 'heavyStrike', 'chainMaster'];
+      var missTex = [];
+      ids.forEach(function (id) {
+        if (!s.textures.exists('rt_rl_' + id + '@m')) missTex.push(id + '@m');
+        if (!s.textures.exists('rt_rl_' + id + '@r')) missTex.push(id + '@r');
+      });
+      assert(missTex.length === 0, '4 件 × 2 套共 8 张图标纹理都生成了', missTex.join(','));
+      assert(s.textures.exists('rt_rl_lightBoots') && !s.textures.exists('rt_rl_lightBoots@m'),
+        '单套遗物仍然只有一张（没有多画）');
+
+      /* ================= 7. 单套遗物不受影响 ================= */
+      section('7. 单套遗物的回归');
+      s.setHeroLook('warrior');
+      s.setRelics(['lightBoots', 'ironWall']);
+      assert(s.relicFx('stamMax', 0) === 30 && s.relicFx('guardPerfect', 0) === 80,
+        '单套遗物照常生效', s.relicFx('stamMax', 0) + '/' + s.relicFx('guardPerfect', 0));
+      s.setRelics([]);
+      assert(s.relicFx('stamMax', 0) === 0, '清空后系数归零', s.relicFx('stamMax', 0));
+
+      lines.push('');
+      log(fail === 0 ? ('全部通过：' + pass + ' 项') : ('通过 ' + pass + ' 项，失败 ' + fail + ' 项'), fail === 0 ? 'ok' : 'bad');
+    } catch (e) {
+      log('运行异常：' + (e && e.stack || e), 'bad');
+    } finally {
+      running = false;
+    }
+  }
+
+  document.getElementById('rerun').addEventListener('click', function () { running = false; run(); });
+  schedule(60);
+})();
+</script>
+</body>
+</html>

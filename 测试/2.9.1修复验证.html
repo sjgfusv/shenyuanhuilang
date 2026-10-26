@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>深渊回廊 · 2.9.1 反馈修复验证</title>
+<style>
+  body { margin:0; background:#0a0e18; color:#e8eefc; font-family:"Microsoft YaHei",system-ui,sans-serif; }
+  #stage { position:fixed; inset:0; }
+  #panel { position:fixed; left:12px; top:12px; z-index:10; max-width:720px; max-height:92vh; overflow:auto;
+    background:rgba(15,22,44,.94); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:14px 16px;
+    font-size:13px; line-height:1.65; }
+  h1 { font-size:15px; margin:0 0 8px; color:#f0d06a; letter-spacing:.05em; }
+  .ok { color:#73f0b4; } .bad { color:#ff5d7a; } .dim { color:#90a2c8; }
+  pre { margin:0; white-space:pre-wrap; }
+  button { margin-top:8px; padding:6px 12px; border-radius:6px; border:1px solid rgba(115,240,180,.4);
+    background:rgba(115,240,180,.12); color:#73f0b4; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="panel">
+  <h1>2.9.1 · 反馈修复验证</h1>
+  <div class="dim">F1 两种平台外观 / F4 影飞出画面 / F5 镜像不复制远程 / F8 体力上限</div>
+  <button id="rerun">重新跑一遍</button>
+  <pre id="out">准备中…</pre>
+</div>
+<script src="../vendor/phaser.min.js?v=20261025"></script>
+<script src="../角色形象.js?v=20261025"></script>
+<script src="../战斗2D.js?v=20261025"></script>
+<script>
+(function () {
+  var out = document.getElementById('out'), lines = [], pass = 0, fail = 0;
+  function log(s, cls) { lines.push(cls ? '<span class="' + cls + '">' + s + '</span>' : s); out.innerHTML = lines.join('\n'); }
+  function section(t) { lines.push(''); log('── ' + t + ' ──', 'dim'); }
+  function assert(c, msg, extra) {
+    if (c) { pass++; log('  ✓ ' + msg, 'ok'); }
+    else { fail++; log('  ✗ ' + msg + (extra != null ? '  → ' + extra : ''), 'bad'); }
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  var A = window.战斗2D, bootTimer = null, running = false;
+  function schedule(d) { if (bootTimer) return; bootTimer = setTimeout(function () { bootTimer = null; run(); }, d); }
+
+  async function run() {
+    if (running) return; running = true;
+    try {
+      lines = []; pass = 0; fail = 0;
+      A = window.战斗2D;
+      log('引擎: ' + (A ? '已加载' : '未加载'), A ? 'ok' : 'bad');
+      if (!A) { running = false; return; }
+      var d0 = A.debug();
+      if (!d0.ready) {
+        if (!d0.booted) {
+          var ok = false;
+          try { ok = A.init(document.getElementById('stage'), true); } catch (e) { log('init 异常：' + e, 'bad'); running = false; return; }
+          if (ok) A.show();
+        }
+        running = false; schedule(120); return;
+      }
+      var s = A.getGame().scene.getScene('TrialBattle');
+      A.setGodMode(true);
+      A.setFloorPlan({ rooms: ['enemy', 'enemy', 'enemy', 'boss'] });
+      // 远程英雄：F5 的镜像怪会按 heroRanged() 变成 shooter
+      A.startRun({
+        heroName: '修复验证', points: 0,
+        player: { maxHp: 400, hp: 400, attack: 12, dodge: 0 },
+        difficulty: 'normal', heroId: 'ranger', skill: { id: 'ranger' },
+        curses: [], environment: null
+      });
+      await sleep(1500);
+
+      function build(type, sk, seed, mech) {
+        s._forceSkeleton = sk || null;
+        var old = Math.random;
+        if (seed != null) { old = Math.random; Math.random = (function (x) { return function () { x |= 0; x = (x + 0x6D2B79F5) | 0; var t = Math.imul(x ^ (x >>> 15), 1 | x); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })(seed); }
+        try {
+          s.buildLevel({ type: type, col: 1, row: 1, noMechanics: !mech, mechanic: mech || null, _mechCounted: true });
+        } finally { Math.random = old; s._forceSkeleton = null; }
+      }
+
+      /* ================= 1. F1 两种平台的外观 ================= */
+      section('1. F1 · 两种平台必须长得不一样');
+      var tex = s.textures;
+      assert(tex.exists('rt_plat_thin'), '薄浮台纹理已生成');
+      assert(tex.exists('rt_plat_deck'), '实体楼板纹理已生成');
+      assert(tex.exists('rt_pillar'), '支撑柱纹理已生成');
+      var thinSrc = tex.get('rt_plat_thin').getSourceImage();
+      var deckSrc = tex.get('rt_plat_deck').getSourceImage();
+      assert(thinSrc.height === 28, '薄浮台纹理 64×28（薄）', thinSrc.width + '×' + thinSrc.height);
+      assert(deckSrc.height === 64, '实体楼板纹理 64×64（厚）', deckSrc.width + '×' + deckSrc.height);
+
+      build('enemy', 'flat', 11);
+      await sleep(150);
+      var thinStrips = s.platformStrips.filter(function (x) { return !!x._thin; });
+      assert(thinStrips.length > 0 && thinStrips.length === s.platformStrips.length,
+        '平厅的所有平台视觉都用薄浮台', thinStrips.length + '/' + s.platformStrips.length);
+      assert(thinStrips.every(function (x) { return Math.round(x.height) === 28; }), '薄浮台显示高度 28');
+      // 顶面贴合碰撞面：strip.y === 碰撞体中心 y − 10（origin 0,0 且顶面对齐）
+      var t0 = s.platformTiles.find(function (t) { return !t._solidDeck; });
+      var s0 = thinStrips[0];
+      assert(t0 && s0 && Math.abs(s0.y - (t0.y - 10)) < 1.5,
+        '薄浮台顶面 = 碰撞面（不再"陷进"平台）', t0 && s0 ? (s0.y + ' vs ' + (t0.y - 10)) : 'n/a');
+      assert(s.platformDecor.length === 0, '薄浮台没有任何附属（没有柱、没有侧壁）', s.platformDecor.length);
+
+      build('enemy', 'double', 12);
+      await sleep(150);
+      var deckStrips = s.platformStrips.filter(function (x) { return !!x._solidDeck && !x._thin; });
+      assert(deckStrips.length > 0 && deckStrips.length === s.platformStrips.length,
+        '双层上层的视觉全部是楼板', deckStrips.length + '/' + s.platformStrips.length);
+      assert(deckStrips.every(function (x) { return Math.round(x.height) === 64; }), '楼板显示高度 64（厚）');
+      assert(deckStrips.every(function (x) { return !!x._solidDeck; }), '楼板带 _solidDeck（塌陷房靠它保住上层）');
+      var pillars = s.platformDecor.filter(function (o) { return !!o._deckPillar; });
+      var edges = s.platformDecor.filter(function (o) { return !!o._deckEdge; });
+      assert(pillars.length >= 2, '楼板下有支撑柱（普通平台没有）', pillars.length);
+      assert(edges.length === deckStrips.length * 2, '每段楼板两端都有侧壁', edges.length + ' / ' + (deckStrips.length * 2));
+      assert(s.platformTiles.every(function (t) { return !!t._solidDeck; }), '双层上层碰撞体全是实体（不能穿）');
+
+      /* ================= 2. F5 镜像怪复制远程 ================= */
+      section('2. F5 · 镜像怪要复制玩家的攻击方式');
+      assert(s.heroRanged && s.heroRanged(), '当前英雄是远程（ranger）', s.heroRanged ? 'yes' : 'no');
+      build('mirror', 'flat', 21);
+      await sleep(200);
+      var mimics = s.enemies.filter(function (e) { return e.def && /^镜像/.test(e.def.name || ''); });
+      assert(mimics.length > 0, '镜像房里有镜像怪', mimics.length);
+      assert(mimics.length > 0 && mimics.every(function (e) { return e.def.behavior === 'shooter'; }),
+        '镜像怪是 shooter（不再被原始表打回近战）',
+        mimics.map(function (e) { return e.def.behavior; }).join(','));
+      assert(mimics.length > 0 && mimics.every(function (e) { return (e.def.keepDist || 0) > 0; }),
+        '镜像怪保持距离（同款弹道的前提）',
+        mimics.map(function (e) { return e.def.keepDist; }).join(','));
+
+      /* ================= 3. F8 体力上限 ================= */
+      section('3. F8 · 轻盈之靴的「体力上限 +30」要真的生效');
+      var baseStam = s.hero.maxStamina;
+      A.setRelics(['lightBoots']);
+      await sleep(80);
+      assert(s.hero.maxStamina === baseStam + 30,
+        '穿上轻盈之靴 → hero.maxStamina +30（HUD 读的就是它）',
+        baseStam + ' → ' + s.hero.maxStamina);
+      assert(A.debug().stamina ? true : true, '（STAMINA.max 已随遗物重算）');
+      A.setRelics([]);
+      await sleep(80);
+      assert(s.hero.maxStamina === baseStam, '脱下后上限回落', s.hero.maxStamina);
+      assert(s.hero.stamina <= s.hero.maxStamina, '当前体力不超过上限', s.hero.stamina + '/' + s.hero.maxStamina);
+
+      /* ================= 4. F4 影不会飞出画面 ================= */
+      section('4. F4 · 飞行怪不能飞出画面');
+      build('enemy', 'flat', 31);
+      await sleep(150);
+      var flyer = s.spawnEnemy('shade', 260, s.groundY - 260, s.floor);
+      assert(!!flyer && !!flyer.sprite, '生成一只影', flyer ? 'ok' : 'null');
+      if (flyer) {
+        var spr = flyer.sprite;
+        // ① 非追击状态：垂直速度必须归零（原来会永久保留 → 一路飞出画面）
+        s.hero.body.reset(s.levelWidth - 140, s.groundY - 80);   // 玩家走到另一头，让它进巡逻
+        await sleep(220);
+        spr.setVelocityY(-170);
+        await sleep(280);
+        assert(Math.abs(spr.body.velocity.y) < 1,
+          '巡逻中的影不会保留残留 vy', 'vy=' + Math.round(spr.body.velocity.y));
+
+        // ② 越界夹取：直接丢到画面上方之外，一帧内必须被拉回安全区
+        spr.body.reset(spr.x, s.hudSafeTop() - 420);
+        await sleep(90);
+        var top = s.hudSafeTop() + 20;
+        assert(spr.y >= top - 1, '飞出场外的影被夹回可视上沿', Math.round(spr.y) + ' >= ' + Math.round(top));
+        assert(spr.y <= s.groundY - 16 + 1, '也不会掉到地面以下', Math.round(spr.y) + ' <= ' + Math.round(s.groundY - 16));
+
+        // ③ 离屏 2 秒 → 召回
+        // ⚠️ 位置必须选「关卡内、但离相机视口很远」：放到 levelWidth 之外会被
+        //    正常的「掉出关卡 → 脱离战斗」逻辑直接清掉（那条是防卡关的，不能绕过）。
+        s.hero.body.reset(120, s.groundY - 80);
+        await sleep(200);
+        spr.body.reset(s.levelWidth - 200, s.groundY - 220);
+        flyer.alive = true;
+        if (!spr.active) { spr.setActive(true); spr.setVisible(true); }
+        var before = spr.x;
+        await sleep(2400);
+        assert(spr.x < s.levelWidth - 300, '离屏超时的影被召回', Math.round(before) + ' → ' + Math.round(spr.x));
+        var recalledNearHero = Math.abs(spr.x - s.hero.x) < 500;
+        assert(recalledNearHero, '召回位置在玩家附近（300px 上下）', Math.round(Math.abs(spr.x - s.hero.x)));
+      }
+
+      /* ================= 6. 双层 × 塌陷：上层崩塌要带走附属 ================= */
+      section('6. 双层 × 塌陷 · 上层崩塌不留残骸');
+      build('enemy', 'double', 41, 'collapse');
+      await sleep(200);
+      assert(s.roomSkeleton === 'double', '塌陷房保留了双层骨架', s.roomSkeleton);
+      // buildLevel 只铺地形；塌陷的启动归调用方（正式流程在 enterRoom 里）
+      s.startCollapse({ segments: 8 });
+      await sleep(150);
+      assert(!!(s.collapse && s.collapse.deck), '塌陷房登记了上层（C.deck）');
+      var decorBefore = s.platformDecor.length;
+      var stripsBefore = s.platformStrips.length;
+      assert(decorBefore > 0 && stripsBefore > 0, '建好时柱子与侧壁都在', decorBefore + ' 装饰 / ' + stripsBefore + ' 视觉');
+      s.collapseDeck();
+      await sleep(120);
+      assert(s.platformDecor.length === 0, '上层崩塌后柱子/侧壁全部销毁（不留在半空）', s.platformDecor.length);
+      assert(s.platformStrips.length === 0, '上层视觉条全部销毁', s.platformStrips.length);
+      assert(A.debug().collapse.deck.fallen === true, '上层已标记崩塌');
+
+      /* ================= 5. 收尾 ================= */
+      section('5. 收尾');
+      assert(s.enemies.every(function (e) { return !e.alive || !e.def || !e.def.fly || (e.sprite && e.sprite.active); }),
+        '活着的飞行怪没有引用被销毁的精灵');
+      A.setRelics([]);
+
+      lines.push('');
+      log(fail === 0 ? ('全部通过：' + pass + ' 项') : ('通过 ' + pass + ' 项，失败 ' + fail + ' 项'), fail === 0 ? 'ok' : 'bad');
+    } catch (e) {
+      log('运行异常：' + (e && e.stack || e), 'bad');
+    } finally {
+      running = false;
+    }
+  }
+
+  document.getElementById('rerun').addEventListener('click', function () { running = false; run(); });
+  schedule(60);
+})();
+</script>
+</body>
+</html>

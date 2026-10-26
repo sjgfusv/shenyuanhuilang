@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>深渊回廊 · 2.9.2 预览判据校准（20 局）</title>
+<style>
+  body { margin:0; background:#080b12; color:#e8eefc; font-family:"Microsoft YaHei",system-ui,sans-serif; }
+  #stage { position:fixed; right:8px; bottom:8px; width:480px; height:270px; z-index:1;
+    border:1px solid rgba(255,255,255,.10); border-radius:10px; overflow:hidden; }
+  #panel { position:relative; z-index:5; max-width:820px; margin:14px; padding:14px 16px;
+    background:rgba(15,22,44,.94); border:1px solid rgba(255,255,255,.12); border-radius:12px;
+    font-size:12.5px; line-height:1.6; }
+  h1 { font-size:15px; margin:0 0 6px; color:#f0d06a; }
+  h2 { font-size:12.5px; margin:14px 0 6px; color:#8ad8ff; }
+  .ok { color:#73f0b4; } .bad { color:#ff5d7a; } .warn { color:#ffd76a; } .dim { color:#8fa2c8; }
+  table { border-collapse:collapse; font-size:12px; margin-top:6px; }
+  td, th { padding:2px 10px 2px 0; text-align:left; } th { color:#8fa2c8; font-weight:normal; }
+  button { margin-top:8px; padding:6px 12px; border-radius:6px; border:1px solid rgba(115,240,180,.4);
+    background:rgba(115,240,180,.12); color:#73f0b4; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="panel">
+  <h1>2.9.2 · 预览判据校准（自动打 20 局）</h1>
+  <div class="dim">用 §5.3 的新判据跑一批真实局：主指标 = 开门时剩余段数（3~5），
+    另看用时 / 强制解锁 / 掉落 / 多拿率 / 读条打断。默认参数：普通 · 8 段 · 4.0s · 3 颗 · 0.8s 预警。</div>
+  <button id="go">开始（20 局）</button>
+  <div id="out">未开始。</div>
+</div>
+<script src="../vendor/phaser.min.js?v=20261024"></script>
+<script src="../角色形象.js?v=20261024"></script>
+<script src="../战斗2D.js?v=20261024"></script>
+<script>
+(function () {
+  var out = document.getElementById('out'), A = window.战斗2D, scene = null, busy = false;
+  var RUNS = 20, PARAMS = { floor: 10, skeleton: 'flat', segments: 8, interval: 4000, warn: 800, need: 3, crystalCount: 5, maxEnemies: 3 };
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function $(t) { return t; }
+
+  async function boot() {
+    if (!A) { out.textContent = '引擎未加载'; return false; }
+    var d = A.debug();
+    if (!d.ready) {
+      if (!d.booted) { var ok = false; try { ok = A.init(document.getElementById('stage'), true); } catch (e) { out.textContent = 'init 异常：' + e; return false; } if (!ok) return false; A.show(); }
+      await sleep(400);
+      return boot();
+    }
+    if (!scene) scene = A.getGame().scene.getScene('TrialBattle');
+    if (!scene) { out.textContent = '场景未就绪'; return false; }
+    A.setGodMode(true);
+    A.setFloorPlan({ rooms: ['enemy', 'enemy', 'boss'] });
+    A.startRun({
+      heroName: '校准', points: 0, player: { maxHp: 500, hp: 500, attack: 12, dodge: 0 },
+      difficulty: 'normal', heroId: 'warrior', skill: { id: 'warrior' }, curses: [], environment: null
+    });
+    await sleep(900);
+    return true;
+  }
+
+  /** 一间房的机器人：先拿够 need 颗钥匙（地面读条 / 空中直接取），再走向传送门 */
+  async function playOne(runIndex) {
+    var before = (A.getCollapseRecords() || []).length;
+    var ok = A.startDebugRoom(PARAMS);
+    if (!ok) return null;
+    await sleep(120);
+    var s = scene, C = s.collapse;
+    if (!C) return null;
+
+    var deadline = performance.now() + 45000;   // 单局上限：45s（超过就当卡住）
+    var lastT = performance.now();
+    while (performance.now() < deadline) {
+      await sleep(16);
+      var now = performance.now();
+      var dt = Math.min(60, now - lastT);
+      lastT = now;
+      var recs = A.getCollapseRecords() || [];
+      if (recs.length > before) return recs[recs.length - 1];   // 本局已结束
+      if (!s.hero || !s.hero.body) continue;
+      if (s.heroDead) continue;
+      var got = s.roomObjective ? s.roomObjective.got : 0;
+      var need = s.roomObjective ? s.roomObjective.need : 0;
+      if (got >= need) { moveTo(s, s.portal ? s.portal.x : s.levelWidth - 100, dt); continue; }
+
+      // 目标：最近的未收集钥匙
+      var keys = s.crystals.filter(function (c) { return c.isKey && !c.taken; });
+      if (!keys.length) { moveTo(s, s.portal ? s.portal.x : s.levelWidth - 100, dt); continue; }
+      var h = s.hero, best = null, bd = 1e9;
+      keys.forEach(function (k) {
+        var cx = k.core ? k.core.x : k.x;
+        var d = Math.abs(cx - h.x);
+        if (d < bd) { bd = d; best = k; }
+      });
+      if (!best) continue;
+      var bx = best.core ? best.core.x : best.x;
+      if (best.airborne) {
+        // 空中钥匙：一跳即收 —— 机器人直接贴上去（等价于"踩头弹跳够到了"）
+        if (bd > 30) moveTo(s, bx, dt);
+        else s.hero.body.reset(bx, (best.core ? best.core.y : best.y) + 20);
+      } else {
+        // 地面钥匙：走近后**站住**读条（不能边走边拿）
+        if (bd > 30) moveTo(s, bx, dt);
+        else s.hero.body.reset(bx, s.groundY - 2);
+      }
+    }
+    return null;
+  }
+
+  function moveTo(s, tx, dt) {
+    var h = s.hero;
+    var speed = 260;               // 与英雄奔跑速度同量级，保证样本是"真玩家速度"
+    var dx = tx - h.x;
+    var step = Math.sign(dx) * Math.min(Math.abs(dx), speed * dt / 1000);
+    // 掉进缺口由引擎自己处理（扣血 + 传送），机器人不特殊照顾 —— 掉落率才是真实指标
+    s.hero.body.reset(h.x + step, s.groundY - 2);
+  }
+
+  async function runAll() {
+    if (busy) return;
+    busy = true;
+    out.innerHTML = '启动中…';
+    if (!(await boot())) { busy = false; return; }
+    if (A.clearCollapseRecords) A.clearCollapseRecords();
+
+    var recs = [];
+    for (var i = 0; i < RUNS; i++) {
+      var r = await playOne(i);
+      if (r) recs.push(r);
+      var line = recs.map(function (x, j) {
+        return '<tr><td>' + (j + 1) + '</td><td>' + x.time + 's</td><td>' + x.collected + '/' + x.need +
+          '</td><td>' + x.exitCollapsed + '</td><td>' + x.falls + '</td><td>' + x.interrupts +
+          '</td><td>' + (x.forced ? '<span class="warn">是</span>' : '—') + '</td></tr>';
+      }).join('');
+      out.innerHTML = '<div class="dim">进度 ' + (i + 1) + '/' + RUNS + '…</div>' +
+        '<table><tr><th>#</th><th>用时</th><th>收集</th><th>剩余段</th><th>掉落</th><th>打断</th><th>强制</th></tr>' +
+        line + '</table>';
+    }
+    out.innerHTML = report(recs);
+    busy = false;
+  }
+
+  function percentile(arr, p) {
+    var a = arr.slice().sort(function (x, y) { return x - y; });
+    if (!a.length) return 0;
+    return a[Math.min(a.length - 1, Math.max(0, Math.ceil(p * a.length) - 1))];
+  }
+
+  /** 用 §5.3 的新判据评价这批数据 */
+  function report(recs) {
+    var n = recs.length;
+    if (!n) return '<div class="bad">一局都没打完（引擎未就绪？）</div>';
+    var sum = function (f) { var t = 0; for (var i = 0; i < n; i++) t += f(recs[i]); return t; };
+    var times = recs.map(function (r) { return r.time; });
+    var avgT = sum(function (r) { return r.time; }) / n;
+    var p90T = percentile(times, 0.9);
+    var avgExit = sum(function (r) { return r.exitCollapsed || 0; }) / n;
+    var forced = recs.filter(function (r) { return r.forced; }).length / n;
+    var fall = recs.filter(function (r) { return r.falls > 0; }).length / n;
+    var extra = sum(function (r) { return r.need ? (r.collected - r.need) / r.need : 0; }) / n;
+    var intr = sum(function (r) { return r.interrupts; }) / n;
+
+    function verdict(okFlag, txt) {
+      return '<span class="' + (okFlag ? 'ok' : 'warn') + '">' + txt + '</span>';
+    }
+    var rows = [
+      ['开门时剩余段（主）', avgExit.toFixed(1) + ' 段', verdict(avgExit >= 3 && avgExit <= 5, avgExit > 6 ? '没压力' : (avgExit < 2 ? '太赶' : '健康'))],
+      ['平均用时', avgT.toFixed(1) + 's', verdict(avgT >= 10 && avgT <= 25, '10~25s')],
+      ['用时 P90', p90T.toFixed(1) + 's', verdict(p90T < 35, '< 35s')],
+      ['强制解锁率', Math.round(forced * 100) + '%', verdict(forced === 0, '0%')],
+      ['掉落率', Math.round(fall * 100) + '%', verdict(fall >= 0.10 && fall <= 0.30, '10~30%')],
+      ['多拿率', Math.round(extra * 100) + '%', verdict(extra >= 0.20 && extra <= 0.50, '20~50%')],
+      ['读条被打断', intr.toFixed(2) + ' 次/局', verdict(intr >= 0.5 && intr <= 3, '0.5~3')]
+    ];
+    return '<h2>20 局结果（走 §5.3 新判据）</h2><table>' +
+      rows.map(function (r) { return '<tr><th>' + r[0] + '</th><td>' + r[1] + '</td><td>' + r[2] + '</td></tr>'; }).join('') +
+      '</table><div class="dim" style="margin-top:8px">逐局：' +
+      recs.map(function (r) {
+        return r.time + 's/' + r.exitCollapsed + '段/' + (r.forced ? 'F' : '-');
+      }).join(' · ') + '</div>';
+  }
+
+  document.getElementById('go').addEventListener('click', runAll);
+  setTimeout(function () { /* 自动开跑，方便无人值守 */ runAll(); }, 400);
+})();
+</script>
+</body>
+</html>

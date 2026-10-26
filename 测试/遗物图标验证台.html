@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>遗物图标验证台 · 深渊回廊 2.9.2</title>
+<style>
+  body { margin:0; background:#0a0e18; color:#e8eefc; font-family:"Microsoft YaHei",system-ui,sans-serif;
+    display:flex; flex-direction:column; align-items:center; padding:22px 16px 30px; }
+  h1 { font-size:15px; margin:0 0 4px; color:#f0d06a; letter-spacing:.05em; }
+  .sub { font-size:12px; color:#90a2c8; margin-bottom:16px; text-align:center; line-height:1.7; }
+  table { border-collapse:separate; border-spacing:0 10px; }
+  th { font-size:11px; font-weight:400; color:#7d8cad; letter-spacing:.08em; padding-bottom:4px; }
+  td { vertical-align:top; text-align:center; }
+  .cell { width:150px; }
+  .icon { width:128px; height:128px; image-rendering:pixelated;
+    background:radial-gradient(circle at 50% 45%, rgba(120,150,220,.13), rgba(8,12,22,.9) 70%);
+    border-radius:12px; border:1px solid rgba(255,255,255,.09); }
+  .name { font-size:13px; margin-top:6px; color:#dfe8fb; font-weight:600; }
+  .eff { font-size:11px; color:#7d8cad; margin-top:2px; line-height:1.5; max-width:150px; }
+  .melee .name { color:#ffc9a8; }
+  .ranged .name { color:#a8e8ff; }
+  #stage { position:fixed; left:-2000px; top:0; width:400px; height:300px; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<h1>双套遗物图标 · 2.9.2 F7</h1>
+<div class="sub">同一 id 两套外观：近战加「刃 / 斜线」，远程加「弧 / 点」。<br>左列 = 近战英雄看到的，右列 = 远程英雄看到的。</div>
+<table id="grid"></table>
+
+<script src="../vendor/phaser.min.js?v=20261025"></script>
+<script src="../角色形象.js?v=20261025"></script>
+<script src="../战斗2D.js?v=20261025"></script>
+<script>
+(function () {
+  var A = window.战斗2D;
+  var IDS = [
+    { id: 'trackingCharm', m: '觅隙', r: '追踪符', me: '偏转 12° · 判定 +6px', re: '追踪 +50% · 弹速 +10%' },
+    { id: 'piercingArrow', m: '裂阵', r: '穿透之矢', me: '横扫多命中 1 个', re: '穿透 +1' },
+    { id: 'heavyStrike', m: '重击', r: '坠星', me: '跳劈 +0.4 · 埋人 +12%', re: '空中射击 +0.4 · 溅射 40px' },
+    { id: 'chainMaster', m: '连击大师', r: '连珠', me: '窗口 +250ms · 横扫 +50%', re: '连射 −12% · 第 3 发 +50%' }
+  ];
+
+  function boot() {
+    if (!A) { setTimeout(boot, 120); return; }
+    var d0 = A.debug();
+    if (!d0.ready) {
+      if (!d0.booted) { try { if (A.init(document.getElementById('stage'), true)) A.show(); } catch (e) { /* 忽略 */ } }
+      setTimeout(boot, 130);
+      return;
+    }
+    render();
+  }
+
+  function render() {
+    var scene = A.getGame().scene.getScene('TrialBattle');
+    var grid = document.getElementById('grid');
+    var head = document.createElement('tr');
+    head.innerHTML = '<th></th><th>近战</th><th>远程</th>';
+    grid.appendChild(head);
+    IDS.forEach(function (row) {
+      var tr = document.createElement('tr');
+      var tdId = document.createElement('td');
+      tdId.innerHTML = '<div style="font-size:12px;color:#66799c;writing-mode:vertical-rl;letter-spacing:.1em;padding-right:6px">' + row.id + '</div>';
+      tr.appendChild(tdId);
+      tr.appendChild(cell(scene, 'rt_rl_' + row.id + '@m', row.m, row.me, 'melee'));
+      tr.appendChild(cell(scene, 'rt_rl_' + row.id + '@r', row.r, row.re, 'ranged'));
+      grid.appendChild(tr);
+    });
+  }
+
+  function cell(scene, texKey, name, eff, cls) {
+    var td = document.createElement('td');
+    td.className = 'cell ' + cls;
+    var cv = document.createElement('canvas');
+    cv.width = 128; cv.height = 128;
+    cv.className = 'icon';
+    var tex = scene.textures.exists(texKey) ? scene.textures.get(texKey) : null;
+    if (tex) {
+      var img = tex.getSourceImage();
+      var ctx = cv.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    }
+    td.appendChild(cv);
+    var n = document.createElement('div'); n.className = 'name'; n.textContent = name; td.appendChild(n);
+    var e2 = document.createElement('div'); e2.className = 'eff'; e2.textContent = eff; td.appendChild(e2);
+    return td;
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

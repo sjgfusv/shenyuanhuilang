@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>深渊回廊 · 2.9.2 守住核心 / 断桥重做</title>
+<style>
+  body { margin:0; background:#080b12; color:#e8eefc; font-family:"Microsoft YaHei",system-ui,sans-serif; }
+  #stage { position:fixed; right:8px; bottom:8px; width:420px; height:236px; z-index:1; opacity:.9;
+    border:1px solid rgba(255,255,255,.10); border-radius:10px; overflow:hidden; }
+  #panel { position:relative; z-index:5; max-width:760px; margin:14px; padding:14px 16px;
+    background:rgba(15,22,44,.94); border:1px solid rgba(255,255,255,.12); border-radius:12px;
+    font-size:12.5px; line-height:1.6; }
+  h1 { font-size:15px; margin:0 0 6px; color:#f0d06a; letter-spacing:.04em; }
+  h2 { font-size:12.5px; margin:14px 0 6px; color:#8ad8ff; letter-spacing:.08em; }
+  .ok { color:#73f0b4; } .bad { color:#ff5d7a; } .dim { color:#8fa2c8; }
+  pre { margin:0; white-space:pre-wrap; }
+  button { margin-top:8px; padding:6px 12px; border-radius:6px; border:1px solid rgba(115,240,180,.4);
+    background:rgba(115,240,180,.12); color:#73f0b4; cursor:pointer; }
+  #gallery { position:relative; z-index:5; margin:0 14px 20px; display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; max-width:1180px; }
+  .cell { background:rgba(15,22,44,.9); border:1px solid rgba(255,255,255,.10); border-radius:10px;
+    padding:8px 8px 6px; text-align:center; }
+  .cell canvas { image-rendering:pixelated; display:block; margin:0 auto 6px; background:
+    repeating-conic-gradient(#12182a 0% 25%, #0d1220 0% 50%) 50%/12px 12px; border-radius:4px; }
+  .cell .nm { font-size:11.5px; color:#cfe0ff; }
+  .cell .sz { font-size:10.5px; color:#7f92b8; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="panel">
+  <h1>2.9.2 · 守住核心 / 断桥重做</h1>
+  <div class="dim">§3 核心对象与结算（P4 已覆盖功能）· §4 断桥视觉与四类加料 · 新美术画廊（按 4× 显示）。</div>
+  <button id="rerun">重新跑一遍</button>
+  <pre id="out">准备中…</pre>
+</div>
+<div id="gallery"></div>
+<script src="../vendor/phaser.min.js?v=20261024"></script>
+<script src="../角色形象.js?v=20261024"></script>
+<script src="../战斗2D.js?v=20261024"></script>
+<script>
+(function () {
+  var out = document.getElementById('out'), gallery = document.getElementById('gallery');
+  var lines = [], pass = 0, fail = 0;
+  function log(s, cls) { lines.push(cls ? '<span class="' + cls + '">' + s + '</span>' : s); out.innerHTML = lines.join('\n'); }
+  function section(t) { lines.push(''); log('── ' + t + ' ──', 'dim'); }
+  function assert(c, msg, extra) {
+    if (c) { pass++; log('  ✓ ' + msg, 'ok'); }
+    else { fail++; log('  ✗ ' + msg + (extra != null ? '  → ' + extra : ''), 'bad'); }
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function seeded(seed) { var x = seed >>> 0; return function () { x |= 0; x = (x + 0x6D2B79F5) | 0; var t = Math.imul(x ^ (x >>> 15), 1 | x); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+  var A = window.战斗2D, bootTimer = null, running = false;
+  function schedule(d) { if (bootTimer) return; bootTimer = setTimeout(function () { bootTimer = null; run(); }, d); }
+
+  async function run() {
+    if (running) return; running = true;
+    try {
+      lines = []; pass = 0; fail = 0;
+      A = window.战斗2D;
+      log('引擎: ' + (A ? '已加载' : '未加载'), A ? 'ok' : 'bad');
+      if (!A) return;
+      var d0 = A.debug();
+      if (!d0.ready) {
+        if (!d0.booted) {
+          var ok = false;
+          try { ok = A.init(document.getElementById('stage'), true); } catch (e) { log('init 异常：' + e, 'bad'); return; }
+          if (ok) A.show();
+        }
+        running = false; schedule(150); return;
+      }
+      var s = A.getGame().scene.getScene('TrialBattle');
+      A.setGodMode(true);
+      A.setFloorPlan({ rooms: ['enemy', 'enemy', 'boss'] });
+      A.startRun({ heroName: '2.9.2验证', points: 0, player: { maxHp: 500, hp: 500, attack: 12, dodge: 0 },
+        difficulty: 'normal', heroId: 'warrior', skill: { id: 'warrior' }, curses: [], environment: null });
+      await sleep(320);
+
+      var TEXS = A.getGame().textures;
+      function texSize(key) {
+        if (!TEXS.exists(key)) return null;
+        var src = TEXS.get(key).getSourceImage();
+        return { w: src.width, h: src.height, src: src };
+      }
+      function buildBridge(floor, seed, type) {
+        s.floorMap.floor = floor; s.floor = floor;
+        s._forceSkeleton = 'bridge';
+        var old = Math.random; if (seed != null) Math.random = seeded(seed);
+        try { s.buildLevel({ type: type || 'enemy', col: 1, row: 1, noMechanics: true }); }
+        finally { Math.random = old; s._forceSkeleton = null; }
+        return A.debug();
+      }
+
+      /* ---------- 1. 新美术资源 ---------- */
+      section('1. 新美术资源（§3 / §4 全部代码纹理）');
+      var need = [
+        ['rt_core_ok', 64, 64], ['rt_core_hurt', 64, 64], ['rt_core_crit', 64, 64], ['rt_core_broken', 64, 64],
+        ['rt_corebar', 64, 10],
+        ['rt_shield_calm', 192, 192], ['rt_shield_tight', 192, 192], ['rt_shield_hit', 192, 192],
+        ['rt_warn_ring', 192, 192], ['rt_warn_crack_l', 128, 256], ['rt_warn_crack_r', 128, 256],
+        ['rt_gap_l', 48, 112], ['rt_gap_r', 48, 112],
+        ['rt_abyss', 64, 160], ['rt_fog', 32, 32], ['rt_pier', 16, 64], ['rt_land_crack', 48, 20],
+        ['rt_plank_ok', 56, 14], ['rt_plank_loose', 56, 14], ['rt_plank_falling', 56, 14],
+        ['rt_rockfall', 26, 26]
+      ];
+      var bad = need.filter(function (n) {
+        var t = texSize(n[0]);
+        return !t || t.w !== n[1] || t.h !== n[2];
+      });
+      assert(bad.length === 0, '20 张新纹理全部存在且尺寸正确', bad.map(function (b) { return b[0]; }).join(','));
+
+      /* ---------- 2. 核心对象 ---------- */
+      section('2. 核心对象（§3.3）');
+      s.floorMap.floor = 10; s.floor = 10;
+      s._forceSkeleton = 'flat';
+      try { s.buildLevel({ type: 'enemy', col: 1, row: 1, mechanic: 'hold', _mechCounted: true }); }
+      finally { s._forceSkeleton = null; }
+      var H = s.holdZone;
+      assert(!!H && !!H.sprite, '核心实体已生成');
+      assert(H.sprite.texture.key === 'rt_core_ok', '满血 → 完好图', H.sprite.texture.key);
+      H.coreHp = Math.round(H.coreMax * 0.5); s.paintCoreState();
+      assert(H.sprite.texture.key === 'rt_core_hurt', '70–35% → 受损图', H.sprite.texture.key);
+      H.coreHp = Math.round(H.coreMax * 0.2); s.paintCoreState();
+      assert(H.sprite.texture.key === 'rt_core_crit', '<35% → 濒碎图', H.sprite.texture.key);
+      assert(!!H.critTween, '濒碎有红闪补间');
+      H.coreHp = 0; H.coreAlive = false; s.paintCoreState();
+      assert(H.sprite.texture.key === 'rt_core_broken', '0 → 碎裂图', H.sprite.texture.key);
+
+      // 血条：就地画、分 8 段、颜色随档位
+      assert(!!H.barPlate && H.barPlate.texture.key === 'rt_corebar', '血条底板（64 宽，就地不进 HUD）');
+      assert(Math.abs(H.barPlate.y - (H.surface - 72)) < 1, '血条在核心上方 72px', Math.round(H.barPlate.y));
+      assert(H.barG && H.barG.commandBuffer !== undefined, '血条填充是 Graphics（颜色可随档位变）');
+
+      // 护罩：常态 / 收缩 / 受击闪 三张，尺寸随半径
+      H.coreAlive = true; H.coreHp = H.coreMax; s.paintCoreState();
+      s.drawHoldZone(s.time.now);
+      assert(H.shield.texture.key === 'rt_shield_calm', '护罩常态图', H.shield.texture.key);
+      assert(Math.abs(H.shield.scaleX - H.r / 86) < 0.001, '护罩缩放 = 半径 / 86');
+      H.r = Math.round(H.r0 * 0.8);
+      s.drawHoldZone(s.time.now);
+      assert(H.shield.texture.key === 'rt_shield_tight', '收缩后换图', H.shield.texture.key);
+      H.hitFlashUntil = s.time.now + 100;
+      s.drawHoldZone(s.time.now);
+      assert(H.shield.texture.key === 'rt_shield_hit', '受击闪换图', H.shield.texture.key);
+      H.hitFlashUntil = 0; H.r = H.r0;
+
+      // 预警：圈边闪 + 两侧裂纹（scrollFactor 0）
+      assert(!!H.warnRing && H.warnRing.texture.key === 'rt_warn_ring', '波次预警圈');
+      assert(H.cracks.length === 2 && H.cracks.every(function (c) { return c.scrollFactorX === 0; }),
+        '两侧裂纹贴画框（scrollFactor 0）');
+      s.warnWave(H, 7);
+      assert(H.warnRing.visible && H.warnRing.alpha >= 0, '预警时圈边可见');
+      await sleep(1100);   // 闪 3 下 = 130ms × 2 × 3 ≈ 780ms，留足余量
+      assert(!H.warnRing.visible, '闪完自动收起');
+      assert(H.cracks.every(function (c) { return !c.visible; }), '裂纹闪完自动收起');
+
+      /* ---------- 3. 断桥：缺口宽度分层 ---------- */
+      section('3. 缺口宽度分层（§4.4）');
+      function gapInfo(floor, seed) { var d = buildBridge(floor, seed); return d.terrain; }
+      var t10 = gapInfo(10, 101), t12 = gapInfo(12, 102);
+      assert(t10.bridgeGaps[0] && (t10.bridgeGaps[0].x1 - t10.bridgeGaps[0].x0) === 128,
+        '≤10 层：2 格（128）轻点跳', t10.bridgeGaps[0] && (t10.bridgeGaps[0].x1 - t10.bridgeGaps[0].x0));
+      assert(t12.bridgeGaps[0] && (t12.bridgeGaps[0].x1 - t12.bridgeGaps[0].x0) === 192,
+        '11–15 层：3 格（192）必须蓄力跳', t12.bridgeGaps[0] && (t12.bridgeGaps[0].x1 - t12.bridgeGaps[0].x0));
+      var two = 0;
+      for (var f = 0; f < 24; f++) {
+        var ti = gapInfo(16, 200 + f);
+        if (ti.bridgeGaps.length === 2) two++;
+      }
+      assert(two > 0, '16 层以后允许 2 处缺口', two + '/24');
+      var oneAt10 = 0;
+      for (var f2 = 0; f2 < 12; f2++) { if (gapInfo(5, 300 + f2).bridgeGaps.length === 1) oneAt10++; }
+      assert(oneAt10 === 12, '5 层前永远 1 处缺口', oneAt10 + '/12');
+
+      /* ---------- 4. 断桥：落差 / 装饰 ---------- */
+      section('4. 桥面落差与"像桥"装饰（§4.2）');
+      var dB = buildBridge(12, 401);
+      var segs = s.groundSegments.map(function (g) { return { x0: g.x0, x1: g.x1, dy: g.dy || 0 }; });
+      assert(segs.length >= 2, '桥面分成多段', segs.length);
+      assert(segs[0].dy === 0, '第一段（出生侧）没有落差');
+      assert(segs.every(function (g) { return Math.abs(g.dy) <= 32; }), '落差不超过 ±32px',
+        JSON.stringify(segs.map(function (g) { return g.dy; })));
+      var mid = (segs[1].x0 + segs[1].x1) / 2;
+      assert(Math.abs(s.groundSurfaceAt(mid) - (s.groundY + segs[1].dy)) < 1,
+        'groundSurfaceAt 与段的落差一致', s.groundSurfaceAt(mid) + ' vs ' + (s.groundY + segs[1].dy));
+      assert(s.skeletonParts.length > 0 && s._bridgeActive === true, '装饰对象挂在 skeletonParts（换房统一销毁）');
+      var piers = s.skeletonParts.filter(function (o) { return o.texture && o.texture.key === 'rt_pier'; });
+      assert(piers.length > 0, '桥面结构缝（桥墩竖纹）', piers.length);
+      assert(s.skeletonParts.some(function (o) { return o.texture && o.texture.key === 'rt_gap_l'; }) &&
+        s.skeletonParts.some(function (o) { return o.texture && o.texture.key === 'rt_gap_r'; }), '左右断面都铺了');
+      assert(s.skeletonParts.some(function (o) { return o.texture && o.texture.key === 'rt_land_crack'; }), '落点撞击裂纹');
+      assert(s.skeletonParts.some(function (o) { return o._isAbyss; }), '缺口下方深渊渐隐');
+      assert(s._bridgeFog.length >= 5, '雾气粒子', s._bridgeFog.length);
+
+      // 雾会动：跑几帧后位置/透明度变化
+      var fogA = s._bridgeFog[0];
+      var fy0 = fogA.img.y, fa0 = fogA.img.alpha;
+      await sleep(500);
+      assert(fogA.img.y !== fy0 || fogA.img.alpha !== fa0, '雾在动（上浮 + 淡入淡出）',
+        fy0 + '→' + Math.round(fogA.img.y));
+
+      /* ---------- 5. 断桥加料 ① 对岸射手 ---------- */
+      section('5. 加料 ① 对岸射手（§4.3）');
+      var dS = buildBridge(10, 501);
+      var snipers = s.enemies.filter(function (e) { return e._bridgeSniper; });
+      assert(snipers.length === 1, '缺口右侧固定 1 只远程', snipers.length);
+      assert(snipers[0] && s.bridgeGaps[0] && snipers[0].sprite.x > s.bridgeGaps[0].x1,
+        '射手在缺口对岸', snipers[0] && Math.round(snipers[0].sprite.x) + ' vs ' + s.bridgeGaps[0].x1);
+      var dS5 = buildBridge(5, 502);
+      assert(s.enemies.filter(function (e) { return e._bridgeSniper; }).length === 0, '5 层前不挂射手');
+      var dEl = buildBridge(12, 503, 'elite');
+      assert(s.enemies.filter(function (e) { return e._bridgeSniper; }).length === 0, '精英房不挂射手');
+
+      /* ---------- 6. 加料 ② 落石 ---------- */
+      section('6. 加料 ② 落石（§4.3）');
+      var dR = buildBridge(12, 601);
+      var hz = s._bridgeHazards;
+      assert(hz && hz.length === s.bridgeGaps.length, '每个缺口一个落石点', hz && hz.length);
+      var g0 = s.bridgeGaps[0];
+      // 玩家在远处 → 不落石
+      s.hero.body.reset(Math.min(s.levelWidth - 60, g0.x1 + 900), s.groundY - 80);
+      hz[0].nextAt = 0;
+      await sleep(500);
+      assert(!s._bridgeRocks.length, '玩家不在缺口附近 → 不落石');
+      // 玩家靠近 → 预警阴影 → 落下
+      s.hero.body.reset(g0.x0 - 120, s.groundY - 80);
+      hz[0].nextAt = s.time.now;
+      await sleep(280);
+      var warnRock = s._bridgeRocks.filter(function (r) { return r.phase === 'warn' && r.shadow; });
+      assert(warnRock.length > 0, '靠近缺口 → 先出 0.6s 地面阴影预警', s._bridgeRocks.length);
+      await sleep(1600);
+      assert(s._bridgeRocks.length === 0, '预警 → 落下 → 落地消失（不留残石）', s._bridgeRocks.length);
+
+      /* ---------- 7. 加料 ③ 残板 ---------- */
+      section('7. 加料 ③ 残板（§4.3）');
+      var dP = buildBridge(12, 701);
+      assert(!!s._plank, '缺口中央有残板', !!s._plank);
+      var pl = s._plank;
+      assert(pl.tile && pl.tile.body && pl.tile.body.checkCollision.down === false,
+        '残板是单向板（能上不能从下面顶）');
+      s.hero.body.reset(pl.x, pl.y - 24);
+      await sleep(400);
+      assert(pl.standMs > 0, '站上去开始计时', Math.round(pl.standMs));
+      assert(pl.vis.texture.key === 'rt_plank_loose', '站 0.24s 后变"松动"图', pl.vis.texture.key);
+      await sleep(900);
+      assert(pl.dropped === true && !pl.tile, '站满 0.8s → 掉落且碰撞体消失');
+      await sleep(900);
+      assert(!pl.vis, '掉进深渊后销毁（不留悬空贴图）');
+
+      /* ---------- 8. 换房清理 ---------- */
+      section('8. 换房清理');
+      var dC = buildBridge(12, 801);
+      assert(s._bridgeActive === true, '断桥房激活装饰');
+      s._forceSkeleton = 'flat';
+      try { s.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true }); }
+      finally { s._forceSkeleton = null; }
+      assert(s._bridgeActive === false && s._bridgeFog === null, '换到平厅 → 断桥装饰清空');
+      assert(!s._plank && !s._bridgeRocks, '残板 / 落石清空');
+      buildBridge(12, 802);
+      s._forceSkeleton = 'flat';
+      try { s.buildLevel({ type: 'enemy', col: 1, row: 1, mechanic: 'hold', _mechCounted: true }); }
+      finally { s._forceSkeleton = null; }
+      assert(s._bridgeActive === false && !!s.holdZone, '换到守点房 → 断桥装饰换掉、守点核心上场');
+
+      /* ---------- 9. 画廊 ---------- */
+      section('9. 美术画廊');
+      renderGallery();
+      assert(gallery.children.length === need.length, '画廊渲染 20 张图', gallery.children.length);
+
+      lines.push('');
+      log(fail === 0 ? ('全部通过：' + pass + ' 项') : ('通过 ' + pass + ' 项 · 失败 ' + fail + ' 项'),
+        fail === 0 ? 'ok' : 'bad');
+    } catch (err) {
+      log('异常：' + (err && err.stack ? err.stack : err), 'bad');
+    } finally {
+      running = false;
+    }
+  }
+
+  function renderGallery() {
+    var TEXS = A.getGame().textures;
+    var items = [
+      ['rt_core_ok', '核心 · 完好'], ['rt_core_hurt', '核心 · 受损'],
+      ['rt_core_crit', '核心 · 濒碎'], ['rt_core_broken', '核心 · 碎裂'],
+      ['rt_corebar', '核心血条（64×10）'],
+      ['rt_shield_calm', '护罩 · 常态'], ['rt_shield_tight', '护罩 · 收缩中'], ['rt_shield_hit', '护罩 · 受击闪'],
+      ['rt_warn_ring', '波次预警圈'], ['rt_warn_crack_l', '预警裂纹 · 左'], ['rt_warn_crack_r', '预警裂纹 · 右'],
+      ['rt_gap_l', '断面 · 左岸'], ['rt_gap_r', '断面 · 右岸'],
+      ['rt_abyss', '深渊渐隐'], ['rt_fog', '雾气粒子'], ['rt_pier', '桥墩结构缝'],
+      ['rt_land_crack', '落点撞击裂纹'],
+      ['rt_plank_ok', '残板 · 完整'], ['rt_plank_loose', '残板 · 松动'],
+      ['rt_plank_falling', '残板 · 掉落中'], ['rt_rockfall', '落石']
+    ];
+    gallery.innerHTML = '';
+    items.forEach(function (it) {
+      if (!TEXS.exists(it[0])) return;
+      var src = TEXS.get(it[0]).getSourceImage();
+      var scale = Math.max(1, Math.min(4, Math.floor(150 / Math.max(src.width, src.height))));
+      var cell = document.createElement('div');
+      cell.className = 'cell';
+      var cv = document.createElement('canvas');
+      cv.width = src.width * scale; cv.height = src.height * scale;
+      var ctx = cv.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(src, 0, 0, cv.width, cv.height);
+      cell.appendChild(cv);
+      var nm = document.createElement('div');
+      nm.className = 'nm'; nm.textContent = it[1];
+      var sz = document.createElement('div');
+      sz.className = 'sz'; sz.textContent = src.width + '×' + src.height + ' · ' + scale + '×';
+      cell.appendChild(nm); cell.appendChild(sz);
+      gallery.appendChild(cell);
+    });
+  }
+
+  document.getElementById('rerun').addEventListener('click', function () { run(); });
+  schedule(60);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>probe · timed room hud</title>
+<style>body{margin:0;background:#0a0e18;color:#e8eefc;font-family:monospace}#stage{position:fixed;inset:0}#out{position:fixed;left:8px;top:8px;z-index:9;white-space:pre-wrap;font-size:13px}</style>
+</head>
+<body>
+<div id="stage"></div>
+<pre id="out">booting</pre>
+<script src="../vendor/phaser.min.js"></script>
+<script src="../角色形象.js"></script>
+<script src="../战斗2D.js"></script>
+<script>
+(function () {
+  var out = document.getElementById('out'), lines = [];
+  function log(s) { lines.push(s); out.textContent = lines.join('\n'); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  var A = window.战斗2D, sc = null;
+
+  async function boot() {
+    var d = A.debug();
+    if (!d.ready) {
+      if (!d.booted) { try { var ok = A.init(document.getElementById('stage'), true); if (ok) A.show(); } catch (e) { log('init err ' + e); return; } }
+      setTimeout(boot, 140); return;
+    }
+    sc = A.getGame().scene.getScene('TrialBattle');
+    A.setGodMode(true);
+    A.setFloorPlan({ rooms: ['enemy', 'enemy', 'enemy', 'enemy', 'boss'] });
+    A.startRun({ heroName: 'probe', points: 0, player: { maxHp: 500, hp: 500, attack: 12, dodge: 0 },
+      difficulty: 'normal', heroId: 'warrior', skill: { id: 'warrior' }, curses: [], environment: null });
+    await sleep(1500);
+    await probe();
+  }
+
+  async function probe() {
+    sc.floorMap.floor = 10; sc.floor = 10;
+    sc._forceSkeleton = 'flat';
+    sc.buildLevel({ type: 'enemy', col: 1, row: 1, mechanic: 'timed', _mechCounted: true });
+    sc._forceSkeleton = null;
+    await sleep(400);
+    var d = A.debug();
+    log('roomMechanic=' + sc._roomMechanic + ' timed=' + JSON.stringify(d.timed || null));
+    log('roomObjective=' + JSON.stringify(sc.roomObjective || null));
+    log('HUD.enemyCountText="' + (sc.enemyCountText ? sc.enemyCountText.text : '?') + '"');
+    log('HUD.roomText="' + (sc.roomText ? sc.roomText.text : '?') + '"');
+    log('centerMsg="' + (sc.centerMsg ? sc.centerMsg.text + '" alpha=' + sc.centerMsg.alpha.toFixed(2) : '?') + '"');
+    log('timedRoom.text 存在=' + !!(sc.timedRoom && sc.timedRoom.text) + ' gfx=' + !!(sc.timedRoom && sc.timedRoom.gfx));
+    // 等中央提示淡出，看玩家还能读到什么
+    await sleep(2200);
+    log('2.2s 后 centerMsg alpha=' + (sc.centerMsg ? sc.centerMsg.alpha.toFixed(2) : '?'));
+    log('2.2s 后 HUD="' + sc.enemyCountText.text + '"');
+    // 剩 4 秒
+    sc.timedRoom.left = 4000; await sleep(300);
+    log('剩4s HUD="' + sc.enemyCountText.text + '" color=' + sc.enemyCountText.style.color);
+    log('DONE');
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>深渊回廊 · 2.9.2 场景验证台</title>
+<style>
+  html,body { margin:0; height:100%; background:#080b12; overflow:hidden; }
+  #stage { position:fixed; inset:0; }
+  #meta { position:fixed; left:10px; top:8px; z-index:9; font:12px/1.5 "Microsoft YaHei",system-ui,sans-serif;
+    color:#cfe0ff; background:rgba(10,14,24,.72); border:1px solid rgba(255,255,255,.12);
+    border-radius:8px; padding:6px 10px; pointer-events:none; }
+  #meta b { color:#f0d06a; } #meta i { color:#8fa2c8; font-style:normal; }
+  body.clean #meta { display:none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="meta">准备中…</div>
+<script src="../vendor/phaser.min.js?v=20261024"></script>
+<script src="../角色形象.js?v=20261024"></script>
+<script src="../战斗2D.js?v=20261024"></script>
+<script>
+/**
+ * 2.9.2 场景验证台
+ * ------------------------------------------------------------
+ * 参数：
+ *   scene = hold | bridge | bridge2       （守住核心 / 断桥 / 16 层两缺口断桥）
+ *   floor = 12                            （层数）
+ *   t     = 4200                          （hold 专用：把袭击进度推进到 t 毫秒，用来截"波次进场"）
+ *   clean = 1                             （隐藏左上角读数，截图用）
+ * 存在意义：§3 / §4 的改动大半是"看起来对不对"，验收必须在真实房间尺寸下看一眼。
+ */
+(function () {
+  var qs = new URLSearchParams(location.search);
+  var which = qs.get('scene') || 'hold';
+  var floorArg = parseInt(qs.get('floor') || '12', 10) || 12;
+  var tArg = parseInt(qs.get('t') || '4200', 10) || 0;
+  var seed = parseInt(qs.get('seed') || '7', 10) || 7;
+  var clean = qs.get('clean') === '1';
+  if (clean) document.body.classList.add('clean');
+
+  var elMeta = document.getElementById('meta');
+  var A = window.战斗2D, scene = null, booting = false;
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function seeded(s) { var x = s >>> 0; return function () { x |= 0; x = (x + 0x6D2B79F5) | 0; var t = Math.imul(x ^ (x >>> 15), 1 | x); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+  async function boot() {
+    if (booting) return;
+    booting = true;
+    A = window.战斗2D;
+    if (!A) { elMeta.textContent = '引擎未加载'; booting = false; return; }
+    var d0 = A.debug();
+    if (!d0.ready) {
+      if (!d0.booted) {
+        try { var ok = A.init(document.getElementById('stage'), true); if (ok) A.show(); }
+        catch (e) { elMeta.textContent = 'init 异常：' + e; booting = false; return; }
+      }
+      booting = false; setTimeout(boot, 140); return;
+    }
+    scene = A.getGame().scene.getScene('TrialBattle');
+    A.setGodMode(true);
+    A.setFloorPlan({ rooms: ['enemy', 'enemy', 'enemy', 'enemy', 'boss'] });
+    A.startRun({
+      heroName: '场景', points: 0,
+      player: { maxHp: 500, hp: 500, attack: 12, dodge: 0 },
+      difficulty: 'normal', heroId: 'warrior', skill: { id: 'warrior' },
+      curses: [], environment: null
+    });
+    await sleep(1500);            // 开局标题动画放完再截图
+    booting = false;
+    build();
+  }
+
+  async function build() {
+    if (!scene) return;
+    var old = Math.random;
+    Math.random = seeded(seed);
+    try {
+      scene.floor = floorArg;
+      if (scene.floorMap) scene.floorMap.floor = floorArg;
+      scene._forceSkeleton = (which === 'hold') ? 'flat' : 'bridge';
+      scene.buildLevel({
+        type: 'enemy', col: 1, row: 1,
+        mechanic: (which === 'hold') ? 'hold' : null,
+        noMechanics: which !== 'hold',
+        _mechCounted: true
+      });
+    } finally {
+      Math.random = old;
+      scene._forceSkeleton = null;
+    }
+    await sleep(80);
+
+    if (which === 'hold' && scene.holdZone) {
+      var H = scene.holdZone;
+      // 2.9.4：截图台直接摆到"袭击已启动"，不再走等玩家进圈的演示流程
+      H.started = true; H.startAt = scene.time.now; H.lastInputAt = scene.time.now;
+      // 把袭击推进到 t：这样截到的是"波次已经进场"的真实一帧，而不是空房间
+      H.t = Math.min(H.dur - 1000, tArg);
+      // 手动改 t 之后要把 waveIdx 对齐，否则 updateHold 会把前面几波一次性补刷
+      while (H.waveIdx < H.waveAt.length && H.t >= H.waveAt[H.waveIdx]) H.waveIdx++;
+      if (scene.hero && scene.hero.body) scene.hero.body.reset(H.x + Math.round(H.r * 0.55), H.surface - 10);
+      scene.queueWave(H, scene.time.now);
+      await sleep(1500);
+    } else if (scene.hero && scene.hero.body) {
+      // 站在第一个缺口左侧：一屏内同时看得到断面、深渊、残板、对岸
+      var g = (scene.bridgeGaps || [])[0];
+      var gx = g ? g.x0 - 150 : Math.round((scene.levelWidth || 1400) * 0.4);
+      scene.hero.body.reset(gx, scene.groundY - 90);
+      await sleep(700);
+    }
+    writeMeta();
+    // 静止画面：暂停场景更新（仍然渲染），这样截图里的读数不会继续跑
+    if (qs.get('freeze') === '1') {
+      await sleep(120);
+      scene.scene.pause();
+      writeMeta();
+    }
+  }
+
+  function writeMeta() {
+    var d = (A.debug && A.debug()) || {};
+    var segs = (scene.groundSegments || []).map(function (g) { return (g.dy || 0); });
+    var gaps = (scene.bridgeGaps || []).map(function (g) { return (g.x1 - g.x0); });
+    var parts = ['<b>' + (scene.roomSkeleton || '—') + '</b> · 第 ' + floorArg + ' 层'];
+    parts.push('<i>地面段落差</i> [' + segs.join(', ') + ']');
+    if (gaps.length) parts.push('<i>缺口</i> [' + gaps.join(', ') + ']');
+    if (d.hold) {
+      parts.push('<i>核心</i> ' + d.hold.coreHp + '/' + d.hold.coreMax +
+        ' · <i>波次</i> ' + d.hold.waveIdx + ' · <i>圈位</i> ' + d.hold.spotWhere +
+        ' · <i>护罩</i> ' + (d.hold.shielded ? '在圈内' : '圈外'));
+    }
+    if (scene._plank) parts.push('<i>残板</i> 有');
+    if (scene.enemies) {
+      var sn = scene.enemies.filter(function (e) { return e._bridgeSniper; }).length;
+      if (sn) parts.push('<i>对岸射手</i> ' + sn);
+    }
+    elMeta.innerHTML = parts.join(' · ');
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

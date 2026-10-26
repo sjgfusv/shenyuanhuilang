@@ -556,12 +556,20 @@
     if (!s || !e || typeof e.openChoicePanel !== 'function') return false;
     log('深渊裂隙：弹出风险收益抉择（第 ' + s.floor + ' 层）');
     bgm('choice');
+    // 2.9.2 F6①：池子抽干时不能还写"获得 1 件遗物"却给钱 —— 选项描述按实际情况改写
+    var dry = relicPoolEmpty();
+    var gold = Math.max(1, Math.round(s.floor || 1)) * 12;
+    var heal = Math.max(1, Math.round((s.player && s.player.maxHp ? s.player.maxHp : 100) * 0.15));
+    var rewardText = dry
+      ? ('+' + gold + ' 金币、回复 ' + heal + ' 生命（遗物已集齐）')
+      : '获得 1 件遗物';
     return e.openChoicePanel('rift', {
       title: '深渊裂隙',
-      desc: '第 ' + s.floor + ' 层 · 想要更多，就得先交出些什么',
+      desc: '第 ' + s.floor + ' 层 · 想要更多，就得先交出些什么' +
+        (dry ? ' · 遗物已集齐，这次的回报折成金币与生命' : ''),
       cards: [
-        { id: 'light', name: '浅尝', desc: '接受 1 条轻诅咒 · 获得 1 件遗物', quality: 'common', tag: '代价小' },
-        { id: 'deep', name: '沉沦', desc: '接受 2 条诅咒（至少 1 条重）· 遗物 + ' + (s.floor * 8) + ' 金币', quality: 'rare', tag: '代价大' },
+        { id: 'light', name: '浅尝', desc: '接受 1 条轻诅咒 · ' + rewardText, quality: 'common', tag: '代价小' },
+        { id: 'deep', name: '沉沦', desc: '接受 2 条诅咒（至少 1 条重）· ' + rewardText + ' + ' + (s.floor * 8) + ' 金币', quality: 'rare', tag: '代价大' },
         { id: 'refuse', name: '拒绝', desc: '不接受诅咒 · 本层商店价格 −10%', quality: 'common', tag: '稳妥' }
       ],
       actions: []
@@ -711,7 +719,8 @@
     { id: 'unbroken',        label: '不屈意志', quality: 'legendary', school: 'link',    desc: '挨打时连携只 −1 而非清零 · 与连携之心成套' },
     { id: 'echoMaster',      label: '回响精通', quality: 'rare',      school: 'link',    desc: '连携招式倍率 1.6 → 2.2' },
     { id: 'executioner',     label: '处决者',   quality: 'rare',      school: 'link',    desc: '斩杀线 +10%；斩杀成功回 1 连携' },
-    { id: 'heavyStrike',     label: '重击',     quality: 'common',    school: 'link',    desc: '跳劈 +0.4 倍、埋人 +12%；跳劈消耗连携时倍率再 +0.6' },
+    { id: 'heavyStrike',     label: '重击',     quality: 'common',    school: 'link',    desc: '跳劈 +0.4 倍、埋人 +12%；跳劈消耗连携时倍率再 +0.6',
+      ranged: { label: '坠星', desc: '空中射击伤害 +0.4 倍，命中溅射 40px' } },
 
     // ===== 贪婪流：收益换风险 =====
     { id: 'greedyHeart',     label: '贪婪之心', quality: 'rare',      school: 'greed',   desc: '金币获取 +60%；受到的伤害 +20%' },
@@ -722,10 +731,13 @@
     { id: 'lightBoots',      label: '轻盈之靴', quality: 'common',    school: '',        desc: '体力上限 +30，停手回复 +30%' },
     { id: 'airFeather',      label: '滞空之羽', quality: 'rare',      school: '',        desc: '空中闪避保留的坠速更小，且不消耗体力' },
     { id: 'shieldResonance', label: '护盾共鸣', quality: 'common',    school: '',        desc: '任何来源获得的护盾 +2；完美格挡额外 +3' },
-    { id: 'chainMaster',     label: '连击大师', quality: 'rare',      school: '',        desc: '连招窗口 +250ms，第 3 段横扫 +50%' },
+    { id: 'chainMaster',     label: '连击大师', quality: 'rare',      school: '',        desc: '连招窗口 +250ms，第 3 段横扫 +50%',
+      ranged: { label: '连珠', desc: '连射间隔 −12%，每第 3 发伤害 +50%' } },
     { id: 'huntMark',        label: '猎杀标记', quality: 'legendary', school: '',        desc: '斩杀线提升至 50%' },
-    { id: 'trackingCharm',   label: '追踪符',   quality: 'rare',      school: '',        desc: '远程普攻追踪 +50%，弹速 +10%' },
-    { id: 'piercingArrow',   label: '穿透之矢', quality: 'rare',      school: '',        desc: '远程普攻穿透 +1' },
+    { id: 'trackingCharm',   label: '觅隙',     quality: 'rare',      school: '',        desc: '挥砍自动朝最近敌人偏转 12°，判定宽度 +6px',
+      ranged: { label: '追踪符', desc: '远程普攻追踪 +50%，弹速 +10%' } },
+    { id: 'piercingArrow',   label: '裂阵',     quality: 'rare',      school: '',        desc: '第 3 段横扫多命中 1 个目标',
+      ranged: { label: '穿透之矢', desc: '远程普攻穿透 +1' } },
     { id: 'abyssMark',       label: '深渊印记', quality: 'rare',      school: '',        desc: '遗物三选一变四选一' }
   ];
 
@@ -758,6 +770,25 @@
 
   var QUALITY_NAME = { common: '普通', rare: '稀有', legendary: '传说' };
   var QUALITY_TAG = { common: '强化', rare: '进阶', legendary: '传说' };
+
+  /**
+   * 当前英雄是不是远程（双套遗物按这个选名字/描述/图标）
+   * 真相在 角色形象.RANGED 里 —— 引擎的 heroRanged() 读的也是同一张表，
+   * 两边必须一致，否则会出现"卡片写追踪符、拿到手变觅隙"。
+   */
+  function heroIsRanged() {
+    var s = S();
+    var id = s && s.hero && s.hero.id;
+    var A = window.角色形象;
+    return !!(id && A && A.RANGED && A.RANGED[id]);
+  }
+
+  /** 遗物的显示名与描述（2.9.2 F7：双套遗物按英雄攻击方式切换） */
+  function relicView(r) {
+    if (!r) return { label: '?', desc: '' };
+    if (r.ranged && heroIsRanged()) return { label: r.ranged.label, desc: r.ranged.desc };
+    return { label: r.label, desc: r.desc };
+  }
 
   /** 把 state.relics 里的元素统一取成引擎认识的 id（新遗物直接有 id，旧的走映射表） */
   function relicIds() {
@@ -842,10 +873,45 @@
     if (!s || !r) return false;
     if (!s.relics) s.relics = [];
     if (s.relics.some(function (x) { return (x && x.id) === r.id; })) return false;
-    s.relics.push({ id: r.id, label: r.label, quality: r.quality, description: r.desc });
-    try { kernel().addLog('获得遗物：' + r.label + '（' + (QUALITY_NAME[r.quality] || '') + '）'); } catch (e) { /* 忽略 */ }
+    // 2.9.2 F7：存档里记的是**当前英雄看到的那个名字**（换英雄时按 id 重新解析）
+    var v = relicView(r);
+    s.relics.push({ id: r.id, label: v.label, quality: r.quality, description: v.desc });
+    try { kernel().addLog('获得遗物：' + v.label + '（' + (QUALITY_NAME[r.quality] || '') + '）'); } catch (e) { /* 忽略 */ }
     pushRelics();
     pushStats();
+    return true;
+  }
+
+  /** 遗物池是不是抽干了（27 件全拿 = 池空） */
+  function relicPoolEmpty() {
+    try { return relicChoices(1).length === 0; } catch (e) { return false; }
+  }
+
+  /**
+   * 遗物池抽干后的兜底换算（2.9.2 · F6①）
+   * ------------------------------------------------------------
+   * 原来池子空时 openRelicPanel 直接 return false —— **静默放行**：
+   *   · 裂隙选「浅尝」：诅咒照扣，遗物没有（白扣）
+   *   · 精英 / 层主必掉：什么都没发生，玩家还以为自己漏拿了
+   * 现在折成「金币 = 层数 × 12」+「回复 15% 生命」，并且在画布上明说。
+   */
+  function relicFallback(reason) {
+    var s = S(), e = engine();
+    if (!s || !s.player) return false;
+    var floorNo = Math.max(1, Math.round(s.floor || 1));
+    var gold = floorNo * 12;
+    var heal = Math.max(1, Math.round((s.player.maxHp || 100) * 0.15));
+    s.player.gold = (s.player.gold || 0) + gold;
+    s.player.hp = Math.min(s.player.maxHp, (s.player.hp || 0) + heal);
+    try { syncPoints(); pushStats(); } catch (err) { /* 忽略 */ }
+    try {
+      kernel().addLog('遗物已集齐 —— 「' + reason + '」折成 +' + gold + ' 金币、回复 ' + heal + ' 生命。');
+    } catch (err) { /* 忽略 */ }
+    try {
+      if (e && typeof e.toast === 'function') {
+        e.toast('遗物已集齐 · +' + gold + ' 金币 / +' + heal + ' 生命', '#ffd76a');
+      }
+    } catch (err) { /* 忽略 */ }
     return true;
   }
 
@@ -858,7 +924,8 @@
     if (!s || !e || typeof e.openRewardChoice !== 'function') return false;
     var n = hasRelic('abyssMark') ? 4 : 3;
     var choices = relicChoices(n);
-    if (!choices.length) return false;          // 池子抽干了：直接放行，不要卡住流程
+    // 池子抽干了（2.9.2 F6①）：不再静默放行，折成金币 + 回血
+    if (!choices.length) { relicFallback(reason || '遗物奖励'); return false; }
     s._relicChoices = choices;
     log('遗物三选一（' + reason + '）· 候选 ' + choices.length + ' 件');
     bgm('shop');
@@ -869,8 +936,10 @@
       title: '遗物',
       desc: reason + ' · 选一件带走（或跳过换 20 金币）',
       cards: choices.map(function (r, i) {
+        // 2.9.2 F7：双套遗物按当前英雄换名字与描述（同一件，两套）
+        var v = relicView(r);
         return {
-          id: String(i), name: r.label, desc: r.desc,
+          id: String(i), name: v.label, desc: v.desc,
           quality: r.quality,
           // 有流派的优先显示流派（品质已由卡片配色承担），没流派的退回原来的品质标签。
           // 这一格标签是"我正在凑哪一套"在界面上唯一的提示，所以让给流派。
@@ -1114,6 +1183,22 @@
       choiceResult: function (r) { onChoiceResult(r || {}); },
       roomAction: function (p) { onRoomAction(p || {}); },
       /**
+       * v2.9 腐化魂晶：引擎只负责"请宿主发奖"，遗物池与诅咒池都在内核。
+       * 返回 { ok, relicName, curseName }；返回 ok:false 时引擎会折成金币，
+       * 不会出现「捡了腐化魂晶却什么都没发生」。
+       */
+      corruptCrystal: function () {
+        var s = S();
+        if (!s) return { ok: false };
+        var choices = relicChoices(1);
+        if (!choices.length) return { ok: false };   // 遗物池抽干
+        var r = choices[0];
+        if (!addRelic(r)) return { ok: false };
+        var got = addCurses(0, 1);                    // 代价：1 条重诅咒
+        try { kernel().addLog('腐化魂晶：获得遗物，同时背负诅咒。'); } catch (e) { /* 忽略 */ }
+        return { ok: true, relicName: relicView(r).label, curseName: got.length ? got[0] : '' };
+      },
+      /**
        * 引擎**内置**商店面板的数据源（Boss 后 nextFloor 会自动 openShop）
        * 不接的话那块面板会显示"商店数据不可用"。数据与宿主自己的商店面板同源，
        * 保证两边看到的商品、价格、限购完全一致。
@@ -1249,8 +1334,11 @@
         var out = { relics: [], shop: [], bonus: [], events: [] };
         try {
           out.relics = RELIC_POOL.map(function (r) {
+            var v = relicView(r);
+            // 图鉴里双套遗物两套都列（"觅隙 / 追踪符"），让玩家知道换英雄会变
+            var both = r.ranged ? (r.label + ' / ' + r.ranged.label) : r.label;
             return {
-              name: r.label, quality: QUALITY_NAME[r.quality] || r.quality, desc: r.desc,
+              name: both, quality: QUALITY_NAME[r.quality] || r.quality, desc: v.desc,
               // 图鉴里也带上流派：不然玩家看不出"这套遗物是往哪个方向堆的"
               school: SCHOOL_NAME[r.school] || ''
             };
@@ -1432,18 +1520,34 @@
     //    遇到"引擎换了房而宿主还没收到 rt:room"的时序就会错，表现为该弹结算的房间
     //    错弹成奖励三选一（实测踩过）。
     var roomType = (p && p.roomType) || (s.currentRoom && s.currentRoom.type) || 'enemy';
-    settleRoomGold(roomType);
+    // 2.9.2 §3：守点房按「核心剩余血量」发奖，倍率由引擎随载荷带过来（1.5 / 1.0 / 0.6 / 0）
+    var goldMul = (p && typeof p.goldMul === 'number') ? p.goldMul : 1;
+    var holdFailed = !!(p && p.holdFailed);
+    settleRoomGold(roomType, goldMul);
     if (s.gameOver) return;
     var combat = isCombatRoom(roomType);
-    log('清房 ' + roomType + ' → ' + (combat ? '弹奖励三选一' : '非战斗房，直接放行') +
+    log('清房 ' + roomType + ' → ' + (holdFailed ? '核心碎裂，本房无奖励' :
+      (combat ? '弹奖励三选一（金币 ×' + goldMul + '）' : '非战斗房，直接放行')) +
         '（引擎 roomNode=' + roomType + '，宿主镜像=' + (s.currentRoom && s.currentRoom.type) + '）');
     // 遗物产出（规划 §3.4）：精英必掉、Boss 必掉；宝箱房走概率
     if (roomType === 'elite') s._pendingRelic = '精英遗物';
     else if (roomType === 'boss') s._pendingRelic = '层主遗物';
     else if (roomType === 'treasure' && Math.random() < 0.45) s._pendingRelic = '宝箱遗物';
     else s._pendingRelic = null;
+    // 失守（核心碎裂）＝ 无奖励：不弹三选一，直接放行。
+    // §3.8 的约束是"绝不因为核心碎而卡关" —— 门已经开了，玩家走人即可。
+    if (holdFailed) {
+      s._pendingRelic = null;
+      if (e && e.setPoints) e.setPoints(s.player.gold);
+      ackRoomCleared();
+      return;
+    }
     if (combat) openRewardPanel();
-    else if (e && e.setPoints) e.setPoints(s.player.gold);
+    else {
+      if (e && e.setPoints) e.setPoints(s.player.gold);
+      // 非战斗房没有奖励面板，过门事件处理完就直接回话
+      ackRoomCleared();
+    }
   }
 
   function onCheckpoint(snap, fromBridge) {
@@ -1597,6 +1701,13 @@
     if (e && e.finishRoomGoal) { try { e.finishRoomGoal(); } catch (err) { /* 忽略 */ } }
   }
 
+  /** 过门后的奖励流程结束：非 Boss 开地图，Boss 由引擎继续换层 */
+  function ackRoomCleared() {
+    var e = engine();
+    if (!e || typeof e.ackRoomCleared !== 'function') return false;
+    try { return e.ackRoomCleared(); } catch (err) { warn('过门确认失败：', err); return false; }
+  }
+
   /**
    * 走向下一间房（引擎的传送门已开）
    * ⚠️ Boss 房**不能**在这里打开地图：引擎 nextFloor() 开头就是
@@ -1617,15 +1728,20 @@
         s._riftDoneThisFloor = true;
         if (openRiftPanel()) return;
       }
-      // 结局面板的触发口径见 openEndingPanel 的说明（原来只在上限层弹，等于"没有胜利"）。
-      // 楼层上限与 openEndingPanel 的 force 参数配合：到上限就是"必须结算"。
-      // 第 5 条：打完层主 = 一次"通关条件"检查点（不是只有 999 层才检查）。
-      //   · 有新达成的结局 → 弹结局面板（选结局 = 胜利结算，或"继续战斗"）；
-      //   · 已到楼层上限 → force = true，全部可用结局都摆出来（必须结算）；
-      //   · 两者都不成立 → 放行，玩家自己走进传送门换层（引擎 nextFloor 处理）。
+      // 有新达成的结局先弹结局；玩家选"继续战斗"后再次走到这里，最后统一 ack。
       if (openEndingPanel(s.floor >= floorLimit(s))) return;
+      ackRoomCleared();
       return;
     }
+    // 2.9.4：只有守点房在选完奖励后直接开地图；其他房型仍要走到传送门才结算，
+    // 所以这里先问引擎"这间是不是守点房"，不能再用全局开关一刀切。
+    if (ackRoomCleared()) return;
+    if (typeof e.shouldAutoMapAfterChoice === 'function' && e.shouldAutoMapAfterChoice()) {
+      try { e.press('map'); } catch (err) { warn('打开地图失败：', err); }
+      return;
+    }
+    var tg = (typeof e.getToggles === 'function') ? e.getToggles() : null;
+    if (tg && tg.settleAtDoor) return;
     try { e.press('map'); } catch (err) { warn('打开地图失败：', err); }
   }
 
@@ -1645,11 +1761,14 @@
     return m.goldReward || 1;
   }
 
-  function settleRoomGold(roomType) {
+  function settleRoomGold(roomType, mulOverride) {
     var s = S(), e = engine();
     if (!s || !s.player) return 0;
     var gain = 0;
     var mult = goldMultiplier(s);
+    // 2.9.2 §3：守点房的金币倍率来自核心血量（0 / 0.6 / 1.0 / 1.5）。
+    // 传 0 是"失守"，必须真的给 0，不能被 Math.max(1, …) 兜底成 1 —— 所以先判 0。
+    var coreMul = (typeof mulOverride === 'number') ? Math.max(0, mulOverride) : 1;
     if (roomType === 'treasure') {
       gain = 15;                                             // 内核宝箱房：+15
     } else if (roomType === 'shop' || roomType === 'rest' || roomType === 'event' || roomType === 'shrine') {
@@ -1659,6 +1778,7 @@
     } else {
       gain = Math.max(1, Math.round((8 + s.floor) * mult));   // enemy / elite / mirror
     }
+    if (gain > 0) gain = Math.round(gain * coreMul);
     if (gain > 0) {
       if (s.player.gold == null) s.player.gold = 0;
       s.player.gold += gain;
@@ -2264,7 +2384,13 @@
     /** 遗物池 —— 内核图鉴直接读它，避免"图鉴手抄一份、迟早和实现漂移" */
     relicPool: function () {
       return RELIC_POOL.map(function (r) {
-        return { id: r.id, label: r.label, quality: r.quality, desc: r.desc, school: r.school || '', schoolName: SCHOOL_NAME[r.school] || '' };
+        return {
+          id: r.id, label: r.label, quality: r.quality, desc: r.desc,
+          school: r.school || '', schoolName: SCHOOL_NAME[r.school] || '',
+          // 双套遗物（2.9.2 F7）：把另一套也交出去，图鉴列表要两套都列
+          rangedLabel: r.ranged ? r.ranged.label : '',
+          rangedDesc: r.ranged ? r.ranged.desc : ''
+        };
       });
     },
     /** 诅咒分级（轻 / 重）—— 同上，图鉴用它而不是自己再列一份 */
@@ -2333,7 +2459,10 @@
         var def = RELIC_BY_ID[k];
         if (!def) {
           for (var i = 0; i < RELIC_POOL.length; i++) {
-            if (RELIC_POOL[i].label === k) { def = RELIC_POOL[i]; break; }
+            // 双套遗物两个名字都认（2.9.2 F7）：旧存档里记着「追踪符」，
+            // 而近战英雄的池子里它现在叫「觅隙」—— 只认一个名字会让旧档丢遗物
+            var r = RELIC_POOL[i];
+            if (r.label === k || (r.ranged && r.ranged.label === k)) { def = r; break; }
           }
         }
         if (!def) return false;

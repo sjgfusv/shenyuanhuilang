@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>深渊回廊 · 2.9 P4 机制验证</title>
+<style>
+  body { margin:0; background:#0a0e18; color:#e8eefc; font-family:"Microsoft YaHei",system-ui,sans-serif; }
+  #stage { position:fixed; inset:0; }
+  #panel { position:fixed; left:12px; top:12px; z-index:10; max-width:720px; max-height:92vh; overflow:auto;
+    background:rgba(15,22,44,.94); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:14px 16px; font-size:13px; line-height:1.65; }
+  h1 { font-size:15px; margin:0 0 8px; color:#f0d06a; letter-spacing:.05em; }
+  .ok { color:#73f0b4; } .bad { color:#ff5d7a; } .dim { color:#90a2c8; }
+  pre { margin:0; white-space:pre-wrap; }
+  button { margin-top:8px; padding:6px 12px; border-radius:6px; border:1px solid rgba(115,240,180,.4);
+    background:rgba(115,240,180,.12); color:#73f0b4; cursor:pointer; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="panel">
+  <h1>2.9 · P4 机制验证</h1>
+  <div class="dim">塌陷（无浮台 / 地面+浮空钥匙 / 前沿传送）/ 守点 / 限时 / 难度缩放 / 清理。</div>
+  <button id="rerun">重新跑一遍</button>
+  <pre id="out">准备中…</pre>
+</div>
+<script src="../vendor/phaser.min.js?v=20261024"></script>
+<script src="../角色形象.js?v=20261024"></script>
+<script src="../战斗2D.js?v=20261024"></script>
+<script>
+(function () {
+  var out = document.getElementById('out'), lines = [], pass = 0, fail = 0;
+  function log(s, cls) { lines.push(cls ? '<span class="' + cls + '">' + s + '</span>' : s); out.innerHTML = lines.join('\n'); }
+  function section(t) { lines.push(''); log('── ' + t + ' ──', 'dim'); }
+  function assert(c, msg, extra) { if (c) { pass++; log('  ✓ ' + msg, 'ok'); } else { fail++; log('  ✗ ' + msg + (extra != null ? '  → ' + extra : ''), 'bad'); } }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function seeded(seed) { var x = seed >>> 0; return function () { x |= 0; x = (x + 0x6D2B79F5) | 0; var t = Math.imul(x ^ (x >>> 15), 1 | x); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+  var A = window.战斗2D, bootTimer = null, running = false;
+  function schedule(d) { if (bootTimer) return; bootTimer = setTimeout(function () { bootTimer = null; run(); }, d); }
+
+  async function run() {
+    if (running) return; running = true;
+    try {
+      lines = []; pass = 0; fail = 0;
+      A = window.战斗2D; log('引擎: ' + (A ? '已加载' : '未加载'), A ? 'ok' : 'bad');
+      if (!A) return;
+      var d0 = A.debug();
+      if (!d0.ready) {
+        if (!d0.booted) { var ok = false; try { ok = A.init(document.getElementById('stage'), true); } catch (e) { log('init 异常：' + e, 'bad'); return; } if (ok) A.show(); }
+        running = false; schedule(120); return;
+      }
+      var s = A.getGame().scene.getScene('TrialBattle');
+      A.setGodMode(true);
+      A.setFloorPlan({ rooms: ['enemy', 'enemy', 'boss'] });
+      A.startRun({ heroName: 'P4验证', points: 0, player: { maxHp: 500, hp: 500, attack: 12, dodge: 0 },
+        difficulty: 'normal', heroId: 'warrior', skill: { id: 'warrior' }, curses: [], environment: null });
+      await sleep(320);
+      A.clearCollapseRecords();
+
+      function buildMech(kind, floor, sk, seed) {
+        s.floorMap.floor = floor || 10; s.floor = floor || 10;
+        s._forceSkeleton = sk || null;
+        var old = Math.random; if (seed != null) Math.random = seeded(seed);
+        try { s.buildLevel({ type: 'enemy', col: 1, row: 1, mechanic: kind, _mechCounted: true }); }
+        finally { Math.random = old; s._forceSkeleton = null; }
+        return A.debug();
+      }
+
+      /* ---------- 1. 塌陷结构 ---------- */
+      section('1. 塌陷：无浮台 / 钥匙 / 门锁');
+      var clearedA = s._floorRoomsCleared || 0;
+      // 预览房没有宿主 ack；这一段专测 settleAtDoor=false 的旧结算路径
+      A.setToggles({ settleAtDoor: false });
+      A.startDebugRoom({ floor: 10, skeleton: 'flat', segments: 8, interval: 8000, warn: 800, need: 3, crystalCount: 5, maxEnemies: 1 });
+      s.collapse.spawnAt = s.time.now + 600000;
+      var d1 = A.debug();
+      assert(d1.mechanic === 'collapse', '调试房挂上塌陷', d1.mechanic);
+      assert(s.platformTiles.length === 0 && s.platformPerches.length === 0, '没有任何浮台', s.platformTiles.length);
+      var keys = s.crystals.filter(function (c) { return !c.taken; });
+      assert(keys.length === 5, '投放 5 颗钥匙', keys.length);
+      assert(keys.filter(function (c) { return c.airborne; }).length === 2, '2 颗浮空钥匙');
+      assert(keys.filter(function (c) { return !c.airborne; }).length === 3, '3 颗地面钥匙');
+      assert(s.portalOpen === false, '出口初始锁着');
+      assert(s.enemyCountText.text.indexOf('魂晶') >= 0, 'HUD 复用魂晶进度', s.enemyCountText.text);
+
+      var groundKeys = s.crystals.filter(function (c) { return c.isKey && !c.taken; });
+      // 宿主就是靠 game.events 上的 rt:room-cleared 发金币 / 经验 / 三选一的（经典2D.js onRoomCleared）
+      var clearedEvt = 0;
+      s.game.events.once('rt:room-cleared', function () { clearedEvt++; });
+      for (var ki = 0; ki < 3; ki++) s.takeCrystal(groundKeys[ki]);
+      var d2 = A.debug();
+      assert(d2.collapse.got === 3 && d2.collapse.unlocked && s.portalOpen, '3 颗 → 解封 + 开门');
+      assert(d2.collapse.forced === false, '正常解封');
+      // 解封必须走 openPortal：本层清房数 +1（宿主据此发金币 / 经验 / 三选一并自动存档）
+      assert((s._floorRoomsCleared || 0) === clearedA + 1, '塌陷房计入本层清房数（奖励结算）',
+        clearedA + ' → ' + (s._floorRoomsCleared || 0));
+      assert(clearedEvt === 1, '发出 rt:room-cleared（宿主据此发奖励）', clearedEvt);
+      A.setToggles({ settleAtDoor: false });
+      s.hero.body.reset(s.portal.x - 10, s.groundY - 80);
+      await sleep(220);
+      assert(A.debug().previewEnded === true, '进门 → 本局结算');
+      assert((A.getCollapseRecords()[0] || {}).reason === 'exit', '记录 reason=exit');
+
+      /* ---------- 1b. 浮空 vs 地面 ---------- */
+      section('1b. 浮空钥匙 / 地面钥匙');
+      A.startDebugRoom({ floor: 10, skeleton: 'flat', segments: 8, interval: 8000, warn: 800, need: 3, crystalCount: 5, maxEnemies: 0 });
+      await sleep(120);
+      var air = s.crystals.filter(function (c) { return c.airborne && !c.taken; })[0];
+      s.hero.body.reset(air.core.x, air.core.y + 26);
+      await sleep(150);
+      assert(air.taken === true, '浮空钥匙一碰即收');
+      assert(A.debug().collapse.got === 1, '浮空钥匙计入目标');
+      var gk = s.crystals.filter(function (c) { return !c.airborne && !c.taken; })[0];
+      s.hero.body.reset(gk.core.x, gk.core.y + 26);
+      await sleep(150);
+      assert(gk.taken === false, '地面钥匙 0.15s 还没收（要读条）');
+
+      /* ---------- 1c. 钥匙抛向前方 ---------- */
+      section('1c. 地面塌掉 → 钥匙抛向前方');
+      A.startDebugRoom({ floor: 10, skeleton: 'flat', segments: 8, interval: 8000, warn: 800, need: 3, crystalCount: 5, maxEnemies: 0 });
+      await sleep(120);
+      var gk2 = s.crystals.filter(function (c) { return c.isKey && !c.airborne && !c.taken; })[0];
+      var gi = -1;
+      for (var q = 0; q < s.collapse.groups.length; q++) { var gg = s.collapse.groups[q]; if (gk2.core.x >= gg.x0 && gk2.core.x < gg.x1) { gi = q; break; } }
+      var before = s.crystals.filter(function (c) { return c.isKey && !c.taken; }).length;
+      s.collapseFallGroup(gi);
+      var after = s.crystals.filter(function (c) { return c.isKey && !c.taken; }).length;
+      assert(gi >= 1 && gi < 7, '找到钥匙所在段', gi);
+      assert(after === before && gk2.taken, '旧钥匙移除、总数不变', before + '→' + after);
+      var nx0 = s.collapse.groups[gi + 1].x0;
+      assert(s.crystals.some(function (c) { return c.isKey && !c.taken && !c.airborne && c.core.x >= nx0 + 30 && c.core.x <= nx0 + 130; }), '落到前沿安全段');
+
+      /* ---------- 2. 强制解锁 / 坠落 ---------- */
+      section('2. 强制解锁与坠落');
+      A.startDebugRoom({ floor: 10, skeleton: 'flat', segments: 8, interval: 8000, warn: 800, need: 5, crystalCount: 5, maxEnemies: 0 });
+      s.collapseWarnGroup(s.collapse.order[s.collapse.order.length - 1]);
+      assert(A.debug().collapse.forced === true && s.portalOpen, '最后一段预警 → 强制解锁');
+      assert(A.debug().collapse.got < 5, '强制解锁不伪造成绩');
+      A.startDebugRoom({ floor: 10, skeleton: 'flat', segments: 8, interval: 8000, warn: 800, need: 3, crystalCount: 5, maxEnemies: 0 });
+      s.collapseFallGroup(0);
+      s._pitLockUntil = 0; s.invulnUntil = 0; var hp0 = s.hero.hp;
+      s.hero.body.reset(s.collapse.groups[1].x0 + 40, s.groundY + 400);
+      await sleep(160);
+      assert(s.hero.hp < hp0, '坠落扣血', hp0 + '→' + s.hero.hp);
+      assert(s.hero.x >= s.collapse.groups[1].x0, '传送到前沿 +1', Math.round(s.hero.x));
+
+      /* ---------- 3. 守点 · 守住核心（2.9.2 §3） ---------- */
+      section('3. 守点 · 守住核心');
+      var clearedH = s._floorRoomsCleared || 0;
+      var clearedHoldEvt = 0;
+      var dh = buildMech('hold', 10, 'flat', 11);
+      s.game.events.once('rt:room-cleared', function () { clearedHoldEvt++; });
+      assert(dh.mechanic === 'hold' && dh.hold, '守点挂载');
+      assert(s.portalOpen === false, '完成前门锁');
+      var H = s.holdZone;
+      assert(dh.hold.coreMax === 120 && dh.hold.coreHp === 120, '核心血量 = 100 + 层数×2', dh.hold.coreMax);
+      assert(dh.hold.dur === 16000 && dh.hold.perWave === 11 && dh.hold.cap === 9,
+        '普通 10 层：16s / 每波 11 只 / 同屏 9', JSON.stringify([dh.hold.dur, dh.hold.perWave, dh.hold.cap]));
+      assert(dh.hold.spotWhere === 'ground', '圈优先落在地面段（不是最高平台）', dh.hold.spotWhere);
+      assert(dh.hold.waveAt.join(',') === '0,4000,8000', '三波在 0% / 25% / 50%', dh.hold.waveAt.join(','));
+      assert(dh.hold.started === false && dh.hold.got === 0 && dh.hold.waveIdx === 0,
+        '进圈前：待启动 / 时间为 0 / 无波次');
+      assert(!s.enemies.some(function (e) { return e.alive; }), '进圈前场上无怪');
+      assert(s.enemyAim({}, s.time.now).core === false, '进圈前怪只索敌玩家');
+      var hpGate = H.coreHp;
+      assert(s.damageCore(20) === 0 && H.coreHp === hpGate, '进圈前核心免疫任何伤害');
+      s.hero.body.reset(H.x + 380, s.groundY - 80);
+      await sleep(240);
+      assert(A.debug().hold.got === 0 && A.debug().hold.waveIdx === 0, '圈外等待不启动计时与波次');
+
+      // 第一次进圈启动；之后跑出圈，计时与袭击仍继续
+      s.hero.body.reset(H.x, H.surface - 10);
+      await sleep(100);
+      assert(A.debug().hold.started === true && A.debug().hold.got > 0 && A.debug().hold.waveIdx >= 1,
+        '进圈启动计时与第一波', JSON.stringify(A.debug().hold));
+      s.hero.body.reset(H.x + 380, s.groundY - 80);
+      var t0h = A.debug().hold.got;
+      await sleep(240);
+      assert(A.debug().hold.got > t0h, '启动后出圈计时照走', t0h + '→' + A.debug().hold.got);
+      await sleep(900);
+      var dW = A.debug();
+      assert(s.enemies.some(function (e) { return e.alive && e._holdRoom; }), '怪由核心逻辑刷出');
+      assert(s.enemies.filter(function (e) { return e.alive; }).length <= dW.hold.cap, '同屏不超过上限',
+        s.enemies.filter(function (e) { return e.alive; }).length + '/' + dW.hold.cap);
+
+      // 核心受伤：0.3s 内最多结算 1 次
+      H.nextHitAt = 0;
+      var chip1 = s.damageCore(6);
+      var chip2 = s.damageCore(6);
+      assert(chip1 > 0 && chip2 === 0, '0.3s 内最多结算 1 次', chip1 + '/' + chip2);
+
+      // 护罩：站在圈内，核心受伤减半
+      s.hero.body.reset(H.x, H.y);
+      await sleep(60);
+      var inShield = s.coreShielded();
+      H.nextHitAt = 0; var dmgIn = s.damageCore(20);
+      s.hero.body.reset(H.x + 600, s.groundY - 80);
+      await sleep(120);
+      H.nextHitAt = 0; var dmgOut = s.damageCore(20);
+      assert(inShield && !s.coreShielded(), '护罩进出可读', inShield + '/' + s.coreShielded());
+      assert(dmgOut === dmgIn * 2 || dmgOut === dmgIn * 2 + 1, '圈内受伤 ×0.5', dmgIn + ' vs ' + dmgOut);
+
+      // 围攻 AI：默认打核心；被玩家打中 → 1.5s 转火
+      var foeH = s.enemies.filter(function (e) { return e.alive; })[0];
+      assert(!!foeH, '场上有怪可测');
+      if (foeH) {
+        foeH._aggroHeroUntil = 0;
+        var aim1 = s.enemyAim(foeH, s.time.now);
+        s.damageEnemy(foeH, { dmg: 1, crit: false }, false);
+        var aim2 = s.enemyAim(foeH, s.time.now);
+        assert(aim1.core === true, '怪默认打核心');
+        assert(aim2.core === false, '被打中 → 转火玩家 1.5s');
+      }
+
+      // 时间到 → 冻结核心受伤 + 按血量发奖
+      H.coreHp = Math.round(H.coreMax * 0.85);
+      s.paintCoreState();
+      H.t = H.dur - 30;
+      await sleep(150);
+      var dfin = A.debug();
+      assert(dfin.hold.ended === true && dfin.hold.outcome === 'time', '时间到 → 袭击结束', dfin.hold.outcome);
+      assert(dfin.hold.goldMul === 1.5 && s.portalOpen, '核心 ≥80% → 完美 ×1.5 + 开门',
+        dfin.hold.goldMul + '/' + s.portalOpen);
+      assert(s.crystals.some(function (c) { return c.kind === 'abyss' && !c.taken; }), '完美守住 → 深渊魂晶');
+      H.nextHitAt = 0;
+      var frozen0 = A.debug().hold.coreHp;
+      assert(s.damageCore(999) === 0 && A.debug().hold.coreHp === frozen0, '结束后核心冻结（不再掉血）');
+      assert(A.debug().settled === true && A.debug().awaitAck === false && clearedHoldEvt === 1 &&
+        (s._floorRoomsCleared || 0) === clearedH + 1 && A.debug().autoMapAfterChoice === true,
+        '守点房：开门即结算，选完奖励直接开图', JSON.stringify([clearedHoldEvt, s._floorRoomsCleared]));
+      assert(s.checkpointState('room').goldMul === 1.5, '快照带 goldMul（宿主据此乘金币）');
+      s.nextFloor();
+      assert(A.debug().mapOpen, '奖励选完 / 直接过门都能开地图');
+      s.closeMap();
+      assert(clearedHoldEvt === 1 && (s._floorRoomsCleared || 0) === clearedH + 1,
+        '关地图不重复结算', JSON.stringify([clearedHoldEvt, s._floorRoomsCleared]));
+
+      // 其他房型仍必须过门结算（这里用普通战斗房验证，不含守点例外）
+      A.setToggles({ settleAtDoor: true });
+      var optEvt = 0;
+      s.game.events.once('rt:room-cleared', function () { optEvt++; });
+      s.floorMap.floor = 10; s.floor = 10;
+      s.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+      A.press('clear');
+      await sleep(140);
+      assert(s.portalOpen && A.debug().settled === false && optEvt === 0,
+        '普通房：开门不结算，必须过门');
+      s.nextFloor();
+      assert(A.debug().settled && A.debug().awaitAck && !A.debug().mapOpen && optEvt === 1,
+        '过门结算并等待 ack');
+      A.ackRoomCleared();
+      assert(A.debug().mapOpen && !A.debug().awaitAck, 'ack 后才开地图');
+      s.closeMap();
+      assert(optEvt === 1, '重复关地图不重复结算');
+      A.setToggles({ settleAtDoor: true });
+
+      // 四档结算
+      function holdAt(ratio, seed) {
+        buildMech('hold', 10, 'flat', seed);
+        var Hz = s.holdZone;
+        Hz.coreHp = Math.max(1, Math.round(Hz.coreMax * ratio));
+        s.finishHold('time');
+        return { mul: Hz.goldMul, open: s.portalOpen, failed: !!s._roomHoldFailed };
+      }
+      var rOk = holdAt(0.62, 22);
+      assert(rOk.mul === 1.0 && rOk.open, '核心 50–79% → 守住 ×1.0', JSON.stringify(rOk));
+      var rNarrow = holdAt(0.3, 23);
+      assert(rNarrow.mul === 0.6 && rNarrow.open, '核心 1–49% → 惨胜 ×0.6', JSON.stringify(rNarrow));
+
+      // 核心碎 = 失守，不是卡关
+      buildMech('hold', 10, 'flat', 24);
+      var Hb = s.holdZone;
+      Hb.started = true;   // 这里单测碎核结算，不重复走进圈流程
+      Hb.coreHp = 1; s.paintCoreState(); Hb.nextHitAt = 0;
+      s.hero.body.reset(Hb.x + 700, s.groundY - 80);
+      await sleep(80);
+      Hb.nextHitAt = 0;
+      s.damageCore(999);
+      var dbr = A.debug();
+      assert(dbr.hold.coreAlive === false && dbr.hold.outcome === 'break', '核心碎 → 失守',
+        JSON.stringify([dbr.hold.coreAlive, dbr.hold.outcome]));
+      assert(dbr.hold.goldMul === 0 && s.portalOpen === true, '失守：无奖励但门照开（不卡关）',
+        dbr.hold.goldMul + '/' + s.portalOpen);
+      assert(s.checkpointState('room').holdFailed === true &&
+        s.checkpointState('room').goldMul === 0, '快照带 holdFailed + goldMul=0');
+
+      // 挂机：3 秒没有任何输入 → 扣 1% 最大生命（不致死）
+      buildMech('hold', 10, 'flat', 25);
+      var Hi = s.holdZone;
+      Hi.started = true;   // 挂机计时只在袭击启动后运行
+      var hp0i = s.hero.hp, maxHpI = s.hero.maxHp;
+      Hi.lastInputAt = s.time.now - 3200;
+      Hi.idleAt = s.time.now + 60;
+      s._keyTapAt = 0;
+      await sleep(600);
+      var lossI = hp0i - s.hero.hp;
+      assert(lossI > 0 && lossI <= Math.max(1, Math.round(maxHpI * 0.02)), '挂机 → 扣 1% 最大生命',
+        hp0i + '→' + s.hero.hp);
+      assert(s.hero.hp >= 1, '挂机扣血不致死', s.hero.hp);
+      buildMech('hold', 10, 'flat', 26);
+      assert(A.debug().hold.started === false && A.debug().hold.got === 0,
+        '每次重建守点房都回到待启动');
+
+      /* ---------- 4. 限时 ---------- */
+      section('4. 限时');
+      var dt = buildMech('timed', 10, null, 12);
+      assert(dt.mechanic === 'timed' && dt.timed && dt.enemiesAlive > 0, '限时挂载且有敌人');
+      assert(dt.timed.screenLocked && dt.timed.text.indexOf('限时') >= 0 && dt.timed.barWidth > 0,
+        '贴屏倒计时文本与进度条存在', JSON.stringify(dt.timed));
+      assert(dt.timed.candle === 'rt_candle_full', '入口蜡烛初始为燃烧态', dt.timed.candle);
+      assert(s.roomText.text.indexOf('房间:限时房') === 0, '房间名直接写限时房', s.roomText.text);
+      var bar0 = dt.timed.barWidth;
+      s.timedRoom.left = 20000;
+      await sleep(100);
+      var bar1 = A.debug().timed.barWidth;
+      s.timedRoom.left = 4000;
+      await sleep(140);
+      assert(bar0 > bar1 && bar1 > A.debug().timed.barWidth, '进度条随剩余时间单调缩短',
+        JSON.stringify([bar0, bar1, A.debug().timed.barWidth]));
+      assert(A.debug().timed.color === '#ff5d7a', '剩 5 秒内倒计时转红', A.debug().timed.color);
+      A.press('clear');
+      await sleep(220);
+      assert(A.debug().objective.done && s.portalOpen, '按时清空 → 开门');
+      dt = buildMech('timed', 10, null, 13);
+      var foe = s.enemies.filter(function (e) { return e.alive; })[0];
+      var atk0 = foe ? foe.atk : 0;
+      s.timedRoom.left = 20;
+      await sleep(160);
+      assert(A.debug().timed.expired === true, '超时');
+      assert(A.debug().timed.text.indexOf('时间到 · 敌人强化') >= 0 && A.debug().timed.candle === 'rt_candle_out',
+        '超时文案与熄灭蜡烛', JSON.stringify(A.debug().timed));
+      assert(foe && foe.atk > atk0, '超时敌人强化');
+      A.press('clear');
+      await sleep(220);
+      assert(A.debug().objective.done && s.portalOpen, '超时后仍可清空通关');
+
+      /* ---------- 5. 难度缩放 ---------- */
+      section('5. 难度参数');
+      var old = s.difficulty;
+      s.difficulty = 'easy'; var ce = s.mechanicParams('collapse', null), he = s.mechanicParams('hold', null), te = s.mechanicParams('timed', null);
+      s.difficulty = 'normal'; var cn = s.mechanicParams('collapse', null);
+      s.difficulty = 'hard'; var ch = s.mechanicParams('collapse', null);
+      s.difficulty = 'hell'; var cl = s.mechanicParams('collapse', null), hl = s.mechanicParams('hold', null), tl = s.mechanicParams('timed', null);
+      assert(cn.segments === 8 && cn.interval === 4000 && cn.warn === 800 && cn.need === 3 && cn.maxEnemies === 3,
+        '普通 = 8/4.0s/3/0.8s/3', JSON.stringify(cn));
+      assert(ce.need === 2 && ce.interval === 5500 && ce.segments === 6 && ce.warn === 1000, '简单缩放', JSON.stringify(ce));
+      assert(ch.segments === 9 && ch.interval === 3400 && ch.need === 3, '困难缩放', JSON.stringify(ch));
+      assert(cl.segments === 10 && cl.interval === 2800 && cl.need === 4 && cl.crystalCount === 6, '地狱缩放/6 钥匙', JSON.stringify(cl));
+      assert(he.dur === 14000 && hl.dur === 20000 && te.need === 36000 && tl.need === 22000, '守点/限时缩放');
+      assert(he.waveMul === 0.7 && hl.waveMul === 1.6 && he.perWave < hl.perWave,
+        '同层波次按难度乘数缩放', JSON.stringify([he.perWave, hl.perWave]));
+      assert(he.coreMax === 100 && hl.coreMax === 170, '核心血量 = 难度基准 + 层数×2',
+        he.coreMax + '/' + hl.coreMax);
+      s.difficulty = 'normal';
+      s.floor = 2; var w2 = s.mechanicParams('hold', null);
+      s.floor = 3; var w3 = s.mechanicParams('hold', null);
+      s.floor = 10; var w10 = s.mechanicParams('hold', null);
+      s.floor = 15; var w15 = s.mechanicParams('hold', null);
+      s.floor = 30; var w30 = s.mechanicParams('hold', null);
+      assert(w2.perWave === 5 && w3.perWave === 5 && w10.perWave === 11 &&
+        w15.perWave === 15 && w30.perWave === 15 && w3.cap <= w3.perWave,
+        '普通曲线：3 层 5 / 10 层 11 / 15 层封顶 15',
+        JSON.stringify([w2.perWave, w3.perWave, w10.perWave, w15.perWave, w30.perWave]));
+      s.difficulty = 'hell'; s.floor = 4; var wx4 = s.mechanicParams('hold', null);
+      assert(wx4.perWave === 9 && wx4.cap === 7, '地狱 4 层降为每波 9 / 同屏 7',
+        JSON.stringify([wx4.perWave, wx4.cap]));
+      s.floor = 10;
+      s.difficulty = 'hell';
+      var dh2 = buildMech('collapse', 10, 'flat', 77);
+      assert(dh2.collapse.params.segments === 10 && dh2.collapse.params.need === 4, '地狱实际建房生效');
+      s.difficulty = old || 'normal';
+
+      /* ---------- 6. 清理 ---------- */
+      section('6. 换房清理');
+      buildMech('hold', 10, 'flat', 31);
+      assert(s.collapse === null, '离开塌陷房 → collapse 清空');
+      buildMech('timed', 10, 'flat', 32);
+      assert(s.holdZone === null, '离开守点房 → 守点圈清空');
+      s.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+      assert(s.timedRoom === null, '离开限时房 → 计时清空');
+
+      /* ---------- 7. 2.9.2：开关 / 保底 / 奖励 / 尺寸 ---------- */
+      section('7. 回退开关 / 保底 / 奖励 / 尺寸（2.9.2）');
+      var tg = A.getToggles();
+      assert(tg.oneWay && tg.tricolor && tg.channel && tg.stomp && tg.holdGate && tg.settleAtDoor,
+        '默认：除守点外均过门结算；holdGate 开启', JSON.stringify(tg));
+
+      // 单向平台：关掉后恢复四面实体（2.8 手感）
+      // ⚠️ 必须强制平厅：断桥没有浮台、双层只有上层，随机骨架会让 platformTiles 为空
+      function flatRoom() {
+        s._forceSkeleton = 'flat';
+        s.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+        s._forceSkeleton = null;
+      }
+      A.setToggles({ oneWay: false });
+      s.floorMap.floor = 10; s.floor = 10;
+      flatRoom();
+      assert(s.platformTiles.length > 0 && s.platformTiles.every(function (t) { return t.body.checkCollision.down; }),
+        '关掉单向 → 平台四面实体', s.platformTiles.length);
+      A.setToggles({ oneWay: true });
+      flatRoom();
+      assert(s.platformTiles.length > 0 && s.platformTiles.every(function (t) { return !t.body.checkCollision.down; }),
+        '打开单向 → 只留上表面', s.platformTiles.length);
+
+      // 守点门闩：关掉 holdGate 回到 2.9.3「进门即开打」
+      A.setToggles({ holdGate: false });
+      var dhOff = buildMech('hold', 10, 'flat', 41);
+      var HOff = s.holdZone;
+      assert(dhOff.hold.started === false && s.enemyAim({}, s.time.now).core === true,
+        '关掉 holdGate → 未进圈也打核心');
+      HOff.nextHitAt = 0;
+      assert(s.damageCore(6) > 0, '关掉 holdGate → 核心可受伤');
+      A.setToggles({ holdGate: true });
+
+      // 三色：关掉后只出蓝
+      A.setToggles({ tricolor: false });
+      var onlyBlue = true;
+      for (var ci = 0; ci < 200; ci++) if (s.rollCrystalKind(false) !== 'blue') onlyBlue = false;
+      assert(onlyBlue, '关掉三色 → 只出蓝魂晶');
+      A.setToggles({ tricolor: true });
+
+      // 读条：关掉后进范围即拾取
+      A.setToggles({ channel: false });
+      s.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+      s.enemies.forEach(function (e) { if (e.alive) { e.hp = 0; s.killEnemy(e); } });
+      var cand = s.crystals.filter(function (c) { return !c.taken; })[0];
+      if (!cand) { s.spawnCrystal(s.hero.x + 6, s.hero.y - 40, 'blue'); cand = s.crystals[s.crystals.length - 1]; }
+      s.crystals.forEach(function (c) { c.chargeMs = 0; c.stillMs = 0; });
+      s.hero.body.reset(cand.core.x, cand.core.y + 26);
+      s.hero.setVelocity(0, 0);
+      s.updateCrystals(16.7);
+      assert(cand.taken === true, '关掉读条 → 碰到即拾取');
+      A.setToggles({ channel: true });
+
+      // 踩头：关掉后不触发弹跳
+      A.setToggles({ stomp: false });
+      s.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+      s.enemies.forEach(function (e) { if (e.alive) { e.hp = 0; s.killEnemy(e); } });
+      var st0 = (A.debug().stompCount || 0);
+      var ce0 = s.spawnEnemy('claw', s.hero.x + 90, s.groundY, 10);
+      s._prevVy = 600;
+      s.hero.y = ce0.sprite.y - (ce0.def.h || 44) - 4;
+      s.onHeroEnemyContact(s.hero, ce0.sprite);
+      assert((A.debug().stompCount || 0) === st0, '关掉踩头 → 不触发弹跳', A.debug().stompCount);
+      A.setToggles({ stomp: true });
+
+      // 奖励：速度 + 收集（超出需求每颗 +3）+ 无伤（出口旁多一颗魂晶）
+      A.startDebugRoom({ floor: 10, skeleton: 'flat', segments: 8, interval: 8000, warn: 800, need: 3, crystalCount: 5, maxEnemies: 0 });
+      // ⚠️ startDebugRoom 会把 points 清零（预览一局从干净状态开始），所以基线要在它之后取
+      var pts0 = s.points;
+      s.collapse.spawnAt = s.time.now + 600000;
+      var allKeys = s.crystals.filter(function (c) { return c.isKey && !c.taken; });
+      assert(allKeys.length === 5, '投放 5 颗钥匙', allKeys.length);
+      allKeys.forEach(function (c) { s.takeCrystal(c); });
+      assert(s.collapse.unlocked === true, '拿满 5 颗解封');
+      assert(s.points - pts0 > 0, '速度 / 收集奖励到账', s.points - pts0);
+      var gift = s.crystals.filter(function (c) {
+        return c && !c.taken && !c.isKey && c.core && Math.abs(c.core.x - (s.portal.x - 150)) < 40;
+      })[0];
+      assert(!!gift, '无伤 → 出口旁多一颗魂晶');
+
+      // 深渊魂晶的强化要作用到之后刷出来的怪（塌陷 / 守点房是持续刷怪的）
+      s.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+      s.enemies.forEach(function (e) { if (e.alive) { e.hp = 0; s.killEnemy(e); } });
+      var plain = s.spawnEnemy('claw', 500, s.groundY - 100, 10);
+      var hpPlain = plain.maxHp;
+      plain.hp = 0; s.killEnemy(plain);
+      s.empowerRoomEnemies();
+      var boosted = s.spawnEnemy('claw', 600, s.groundY - 100, 10);
+      assert(boosted.maxHp > hpPlain, '强化后新刷的怪也变强', hpPlain + ' → ' + boosted.maxHp);
+
+      // 守点圈 / 进度文字不压 HUD
+      var dh7 = buildMech('hold', 10, null, 21);
+      var H7 = s.holdZone;
+      assert(H7 && H7.y - H7.r >= s.hudSafeTop(), '守点圈顶不压 HUD',
+        (H7 ? Math.round(H7.y - H7.r) : '?') + ' / ' + s.hudSafeTop());
+      assert(H7 && H7.text.y - 8 >= s.hudSafeTop(), '进度文字不压 HUD',
+        (H7 ? Math.round(H7.text.y) : '?') + ' / ' + s.hudSafeTop());
+      assert(H7 && H7.r >= 58 && H7.r <= 86, '圈半径随视口夹在 58~86', H7 && H7.r);
+      assert(s.checkpointState('room').mechanic === 'hold', '存档快照带 mechanic');
+
+      // 引擎默认值 API（预览页不再手抄 MECH_DIFF）
+      var md = A.getMechanicDefaults();
+      assert(md && md.normal.segments === 8 && md.normal.interval === 4000 && md.hell.need === 4 && md.easy.interval === 5500,
+        'getMechanicDefaults 与 MECH_DIFF 同源', JSON.stringify(md && md.normal));
+
+      /* ---------- 8. 塌陷 × 多骨架（2.9.1，方案 §5 / §6 / §10） ---------- */
+      section('8. 塌陷 × 双层 / 断桥');
+
+      // ---- 断桥 × 塌陷 ----
+      s.floorMap.floor = 10; s.floor = 10;
+      s._forceSkeleton = 'bridge';
+      s.buildLevel({ type: 'enemy', col: 1, row: 1, mechanic: 'collapse', _mechCounted: true });
+      s._forceSkeleton = null;
+      var cb = A.debug().collapse;
+      assert(cb && cb.skeleton === 'bridge', '断桥挂上塌陷（不再被强制平厅）', cb && cb.skeleton);
+      assert(s.bridgeGaps.length === 1, '挂塌陷时缺口固定 1 处', s.bridgeGaps.length);
+      assert(cb.segments === 6, '断桥块数 6（8 − 2）', cb.segments);
+      assert(cb.params.interval === 4500, '断桥间隔放宽到 4.5s', cb.params.interval);
+      var preG = s.collapse.groups.filter(function (g) { return g.pre; });
+      assert(preG.length === 1 && preG[0].state === 'fallen', '天然缺口 = 开局已塌块', preG.length);
+      assert(s.collapse.order.indexOf(preG[0].i) < 0, '缺口不参与时间轴');
+      assert(s.collapse.order.every(function (ix) { return !s.collapse.groups[ix].pre; }), '时间轴只走非缺口块');
+      // 钥匙：出生侧 2 颗，另一侧 3 颗 → 同侧凑不齐
+      var gapX = (preG[0].x0 + preG[0].x1) / 2;
+      var leftKeys = s.crystals.filter(function (c) { return c.isKey && !c.taken && c.core.x < preG[0].x0; });
+      var rightKeys = s.crystals.filter(function (c) { return c.isKey && !c.taken && c.core.x > preG[0].x1; });
+      assert(leftKeys.length === 2 && rightKeys.length === 3, '出生侧 2 / 另一侧 3（同侧 < 需求）',
+        leftKeys.length + ' / ' + rightKeys.length);
+      // 掉进天然缺口 → 送到缺口右侧（不往回送）
+      s._pitLockUntil = 0; s.invulnUntil = 0;
+      s.hero.body.reset(gapX, s.groundY + 300);
+      await sleep(170);
+      assert(s.hero.x > preG[0].x1, '掉进天然缺口 → 传送到右侧', Math.round(s.hero.x) + ' > ' + preG[0].x1);
+
+      // ---- 双层 × 塌陷 ----
+      s.floorMap.floor = 12; s.floor = 12;
+      s._forceSkeleton = 'double';
+      s.buildLevel({ type: 'enemy', col: 1, row: 1, mechanic: 'collapse', _mechCounted: true });
+      s._forceSkeleton = null;
+      var cd = A.debug().collapse;
+      assert(cd && cd.skeleton === 'double', '双层挂上塌陷', cd && cd.skeleton);
+      assert(cd.deck && !cd.deck.fallen, '上层有独立寿命控制器', JSON.stringify(cd.deck));
+      var deckY = s.deckY;
+      var deckKeys = s.crystals.filter(function (c) { return c.isKey && !c.taken && Math.abs(c.core.y - (deckY - 34)) < 20; });
+      var lowKeys = s.crystals.filter(function (c) { return c.isKey && !c.taken && c.core.y > deckY + 20; });
+      assert(deckKeys.length === 3, '上层 3 颗钥匙', deckKeys.length);
+      assert(lowKeys.length === 2 && (lowKeys.length < 3), '下层 + 空中只有 2 颗（< 需求）', lowKeys.length);
+      assert(cd.deck.warnGroup === 3, '上层在下层第 4 块预警时同步', cd.deck.warnGroup);
+      // 下层第 4 块预警 → 上层同步预警
+      s.collapseWarnGroup(s.collapse.order[cd.deck.warnGroup]);
+      assert(A.debug().collapse.deck.warned === true, '上层进入预警');
+      // 玩家站上层 → 崩塌时被震落、不掉血
+      var hpDeck = s.hero.hp;
+      s.hero.body.reset(cd.deck.y === 0 ? 300 : s.collapse.deck.tiles[3].x, deckY - 40);
+      s.hero.setVelocity(0, 0);
+      s.collapse.deck.fallAt = 0;
+      s.collapseDeck();
+      assert(A.debug().collapse.deck.fallen === true, '上层整块崩塌');
+      assert(s.hero.hp === hpDeck, '震落不扣血', hpDeck + ' → ' + s.hero.hp);
+      assert(s.hero.y > deckY, '玩家被送到下层', Math.round(s.hero.y) + ' / deck ' + Math.round(deckY));
+      assert(s.platformTiles.every(function (t) { return !t._solidDeck; }), '上层碰撞体全部销毁');
+      assert(s.platformStrips.every(function (t) { return !t._solidDeck; }), '上层视觉条全部销毁');
+      // 退化之后仍然是同一条时间轴
+      assert(s.collapse.warnIndex >= 0 || s.collapse.nextOrder > 0, '时间轴继续推进');
+
+      // ---- 回退开关：关掉某一格 → 该骨架不再挂塌陷 ----
+      A.setCollapseSkeleton('double', false);
+      s.floorMap.floor = 20; s.floor = 20;
+      var f1 = s.buildLevel({ type: 'enemy', col: 1, row: 1, mechanic: 'collapse', _mechCounted: true });
+      assert(s.roomSkeleton !== 'double', '关掉 collapseOnDouble → 双层不再挂塌陷', s.roomSkeleton);
+      A.setCollapseSkeleton('bridge', false);
+      s.floorMap.floor = 20; s.floor = 20;
+      s.buildLevel({ type: 'enemy', col: 1, row: 1, mechanic: 'collapse', _mechCounted: true });
+      assert(s.roomSkeleton === 'flat', '关掉 collapseOnBridge → 断桥不再挂塌陷', s.roomSkeleton);
+      A.setCollapseSkeleton('double', true); A.setCollapseSkeleton('bridge', true);
+
+      // ---- 不波及非塌陷房：断桥 × 无机制 仍是 1~2 个缺口 ----
+      var gapsN = { 1: 0, 2: 0, other: 0 };
+      for (var gq = 0; gq < 30; gq++) {
+        s.floorMap.floor = 20; s.floor = 20;
+        s._forceSkeleton = 'bridge';
+        s.buildLevel({ type: 'enemy', col: 1, row: 1, noMechanics: true });
+        s._forceSkeleton = null;
+        var gn = s.bridgeGaps.length;
+        if (gn === 1) gapsN[1]++; else if (gn === 2) gapsN[2]++; else gapsN.other++;
+      }
+      assert(gapsN.other === 0 && gapsN[2] > 0, '非塌陷断桥缺口仍是 1~2 处', JSON.stringify(gapsN));
+
+      lines.push('');
+      log(fail === 0 ? ('全部通过：' + pass + ' 项') : ('通过 ' + pass + ' 项，失败 ' + fail + ' 项'), fail === 0 ? 'ok' : 'bad');
+    } finally { running = false; }
+  }
+
+  document.getElementById('rerun').addEventListener('click', run);
+  window.addEventListener('load', function () { schedule(0); });
+  if (document.readyState === 'complete') schedule(0);
+})();
+</script>
+</body>
+</html>

@@ -27,9 +27,9 @@
   <button id="rerun">重新跑一遍</button>
   <pre id="out">准备中…</pre>
 </div>
-<script src="../vendor/phaser.min.js?v=202611005"></script>
-<script src="../角色形象.js?v=202611005"></script>
-<script src="../战斗2D.js?v=202611005"></script>
+<script src="../vendor/phaser.min.js?v=20261024"></script>
+<script src="../角色形象.js?v=20261024"></script>
+<script src="../战斗2D.js?v=20261024"></script>
 <script>
 (function () {
   var out = document.getElementById('out');
@@ -99,7 +99,22 @@
     assert(m.guardPerfect === 280, '铁壁：完美格挡 200 → 280', m.guardPerfect);
     assert(m.chainWindow === 1010, '连击大师：连招窗口 760 → 1010', m.chainWindow);
     assert(m.staminaMax === 130, '轻盈之靴：体力上限 100 → 130', m.staminaMax);
-    assert(m.rangedPierce === 3, '穿透之矢：穿透 2 → 3', m.rangedPierce);
+    // 2.9.2 F7：穿透之矢按武器换整套 —— 近战装它是「裂阵」（横扫多命中 1 个），
+    // 远程才是「穿透之矢」。所以近战不该加穿透，改断 sweepExtra。
+    var scn = A.getGame().scene.getScene('TrialBattle');
+    assert(m.weapon === 'melee' && m.rangedPierce === 2, '近战装穿透之矢 → 不加穿透（换成了裂阵）',
+      m.weapon + '/' + m.rangedPierce);
+    assert(m.sweepExtra === 1, '裂阵：横扫额外多命中 1 个', m.sweepExtra);
+    var prevLook = scn.heroLookId;
+    scn.heroLookId = 'ranger';                 // 站到远程英雄的位置上重算同一件遗物
+    A.setRelics(['piercingArrow']);
+    var mr = A.debug().mech;
+    assert(mr.weapon === 'ranged' && mr.rangedPierce === 3, '远程英雄装同一件 → 穿透 2 → 3',
+      mr.weapon + '/' + mr.rangedPierce);
+    assert(mr.sweepExtra === 0, '远程英雄不再有裂阵的横扫加成', mr.sweepExtra);
+    scn.heroLookId = prevLook;
+    A.setRelics(['piercingArrow']);
+    assert(A.debug().mech.sweepExtra === 1, '切回近战 → 效果切回裂阵', A.debug().mech.sweepExtra);
     assert(m.dodgeSharpMult === 3, '锐利核心：锐利倍率 2.2 → 3.0', m.dodgeSharpMult);
     // 反复下发不累加
     A.setRelics([]);

@@ -39,10 +39,30 @@ class ThreadingServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
+def lan_ip():
+    """取本机局域网 IP，方便手机调试。取不到就返回 None。"""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))  # 不会真的发包，只是让系统选出口网卡
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
 if __name__ == '__main__':
     handler = functools.partial(NoCacheHandler, directory=ROOT)
     with ThreadingServer(('0.0.0.0', PORT), handler) as httpd:
-        print('[深渊回廊] 本地服务器已启动 http://0.0.0.0:%d/  根目录 %s  （已禁用缓存）' % (PORT, ROOT))
+        # 注意：0.0.0.0 只是「监听所有网卡」的绑定地址，不能直接粘进浏览器
+        # （浏览器会报 ERR_ADDRESS_INVALID），必须用 127.0.0.1 或 localhost。
+        print('[深渊回廊] 本地服务器已启动，根目录 %s（已禁用缓存）' % ROOT)
+        print('           本机访问： http://127.0.0.1:%d/' % PORT)
+        ip = lan_ip()
+        if ip:
+            print('           手机访问： http://%s:%d/   （需同一 Wi-Fi）' % (ip, PORT))
+        sys.stdout.flush()  # 被重定向/管道时也能立刻看到提示
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

@@ -13,7 +13,7 @@
   <img alt="pwa" src="badges/en/pwa.svg" />
   <img alt="platform" src="badges/en/platform.svg" />
 
-  <sub>9 heroes · 10 enemy types · 24 relics · 15 environment effects · 13 endings</sub>
+  <sub>9 heroes · 13 enemy types · 27 relics · 15 environment effects · 13 endings</sub>
 
   <br /><br />
 
@@ -44,14 +44,17 @@ The whole game is a pile of static files you can open by double-clicking.
 | | |
 |---|---|
 | 🕹️ **Side-scrolling real-time combat** | Charged jumps, dive attacks, dodge rolls, perfect blocks, shield counters, chain attacks and fury bursts — every timing window is learnable |
+| 🏗️ **Terrain skeletons (2.9)** | Every combat room rolls one: flat hall 40% / double deck 35% / broken bridge 25%; floor 1 stays flat, and deeper floors grow new shapes |
+| ⏳ **Three room mechanics (2.9)** | Collapsing corridor (locked exit + crystal keys + collapsing floor), hold the zone, and a clear-before-time-limit room — the first verbs besides "kill everything" |
+| 🪜 **Jumping becomes combat language (2.9)** | One-way platforms, fast-fall through them, and head-stomp bounce; melee enemies can leap at airborne players |
 | 🎭 **9 heroes, each with its own look and feel** | Two systems, melee and ranged; the Ranger, Mage and Sage fire their own projectiles (Gale Arrow / Arcane Orb / Psionic Wave) |
-| 👹 **10 enemy types with distinct AI** | Chaser / charger / flyer / ranged kiter / boss. The Mimic **copies your hero's body, gear and attack style** |
-| 🧬 **Run-based Roguelike** | 24 relics + 10 curses + 15 environment effects, stacking risk and reward |
-| 🗺️ **Branching room map** | Pick your route every floor: enemy / elite / mirror / treasure / shrine / shop / rest / random event / floor lord |
-| ♻️ **Two complete builds side by side** | One click in the sidebar switches between 2.7 (real-time 2D) and 2.6 (the frozen legacy build); their saves are kept apart |
+| 👹 **13 enemy types with distinct AI** | Chaser / charger / flyer / ranged kiter / shield / support / boss. The Mimic **copies your hero's body, gear and attack style** |
+| 🧬 **Run-based Roguelike** | 27 relics in four schools + 10 curses + 15 environment effects, stacking risk and reward |
+| 🗺️ **Branching room map** | Pick your route every floor: enemy / elite / mirror / treasure / shrine / shop / rest / random event / floor lord; combat rooms also stack terrain and mechanics |
+| ♻️ **Two complete builds side by side** | One click in the sidebar switches between the current 2D build and 2.6 (the frozen legacy build); their saves are kept apart |
 | 📱 **Playable on phones** | Virtual stick + touch buttons, automatic landscape and fullscreen, multi-touch, installable as a PWA |
 | 💾 **5 save slots** | Import / export / rename / overwrite, autosave, and cross-version migration that only copies — never deletes |
-| 📚 **In-game codex** | 10 categories built from the very data the game runs on — the codex cannot lie about the numbers |
+| 📚 **In-game codex** | 11 categories built from the very data the game runs on — the codex cannot lie about the numbers |
 
 ---
 
@@ -221,13 +224,12 @@ Neither option needs any extra configuration — `index.html` in the root alread
 ├── favicon.ico / logo.png   # Icons
 ├── LICENSE                  # MIT license
 ├── badges/                  # Local badge SVGs for both READMEs (Chinese at the root, English under badges/en/)
-├── logo/                    # Logo variants and the scripts that generate them
 ├── vendor/
 │   └── phaser.min.js        # Phaser 3.80.1 (vendored, no network needed)
 ├── 老版2.6/                  # The frozen 2.6 build (classic turn-based + 2D trials, switchable from the sidebar)
 ├── 测试/                     # Browser test panel and regression scripts
-├── 其他/                     # Debug server, design docs, preview pages, historical changelog
-└── 待做/                     # Plans and open issues
+├── 其他/                     # Debug server, design docs, preview pages, historical changelog, delivered plans and feedback records
+└── 待做/                     # Placeholders for upcoming work (monsters / random events / styles)
 ```
 
 > All file names are in Chinese because the game itself is Chinese; the source is UTF-8 throughout.
@@ -316,21 +318,28 @@ there the official route is "Add to Home Screen".
 |---|---|
 | [`其他/2D实时战斗实现说明.md`](其他/2D实时战斗实现说明.md) | Combat design, architecture, public API, AI state machine, design system and per-item measurements |
 | [`其他/角色形象设定.md`](其他/角色形象设定.md) | Silhouette design and procedural drawing conventions for all 19 characters |
-| [`待做/2.7规划.md`](待做/2.7规划.md) | The complete 2.7 plan ("merge trials into classic") with per-phase delivery records |
-| [`待做/2.7合并遗留修复清单.md`](待做/2.7合并遗留修复清单.md) | Post-merge issues and the evidence gathered while fixing them |
-| `其他/*预览.html` | Standalone preview pages (start screen / character art / trial styles) running the same code as the game |
+| [`其他/2.7规划.md`](其他/2.7规划.md) | The complete 2.7 plan ("merge trials into classic") with per-phase delivery records |
+| [`其他/2.7合并遗留修复清单.md`](其他/2.7合并遗留修复清单.md) | Post-merge issues and the evidence gathered while fixing them |
+| [`其他/2.9.1反馈与改进.md`](其他/2.9.1反馈与改进.md) | The feedback plan and per-batch records from 2.9.1 onwards (core-defence hold room, bridge rework, preview criteria) |
+| `其他/*预览.html` | Standalone preview pages (character art / trial styles / relic icons / badges / sprites) running the same code as the game; 2.9 adds the collapsing-corridor tuning page |
 | `测试/*.js` | Regression scripts for items, relics, environments, monsters, saves, mobile layout and more |
 
 ---
 
 ## 🗺️ Versions and roadmap
 
-- **v2.7.2** (current) feel and display fixes — see the in-game changelog
+- **v2.9.4** (current) read the room first, then walk out yourself: hold rooms now **start only when you enter the shield** — before that the core is invulnerable, the timer is stopped and no waves spawn. Wave sizes follow a floor curve (5 per wave on floor 3 up to 15 on floor 15, then capped), cutting Hell floor 4 from 15 per wave / 10 on screen to 9 / 7. Timed rooms gain a screen-anchored countdown with three colour bands, a per-second tick in the last five seconds, and a three-state entrance candle. **Hold rooms** settle their reward as soon as the core is held and open the map right after you choose, with the portal kept lit as a fallback; every other room type still requires walking through the portal to settle. This also fixes repeated rewards when reopening the map
+- **v2.9.3** hold the core · a bridge that reads as broken: the hold room is now **protect a core** — the horde targets the core first, and surviving the 16s assault pays out by remaining core HP (perfect ×1.5 + crystal / held / narrow win / shattered: no reward but the door still opens); standing in the ring is now a shield (half damage to the core) and going idle for 3s costs 1% max HP. The broken bridge gains jagged cross-sections with rebar and a snapped beam, abyss fade with rising fog, pier seams and landing cracks, per-segment height offsets, gap widths that scale by floor (128 / 192 / two gaps), plus three additions: a far-bank sniper, falling rocks, and a plank that gives way. The preview page now judges runs by segments left at the exit (the primary metric) plus an over-collect rate, dropping the always-zero trapped rate
+- **v2.9.2** readable · visible · nothing wasted: pass-through platforms became **thin, cold light sheets with a dissolving underside**, while solid decks became **thick warm brick with pillars and end walls** — you can tell what you can pass through by looking at the bottom edge (this also fixes the deck art sitting 22px above the collision surface). Fixes three bugs: the shade flying off-screen and stalling the room, mimics not copying ranged attacks, and the light-boots stamina cap never applying. New mechanics are now taught on floors 3/4/5, every floor from 3 onwards guarantees one mechanic room, and the broken bridge arrives on floor 3. Four relics now swap a whole set with your weapon (Tracking Charm ↔ Seamfinder, Piercing Arrow ↔ Rankbreaker, Heavy Strike ↔ Starfall, Chain Master ↔ Chainbolt). Once all relics are collected the reward converts into gold and healing instead of cursing you for nothing
+- **v2.9.1** mechanic rooms get their finishing pass: a collapse room is no longer flat-only — it also runs on the **double deck** (the upper deck collapses as one block after ~17s; you are shaken down without damage) and on the **broken bridge** (the natural gap counts as a block that has already fallen; the remaining 6 blocks keep collapsing). Both new layouts guarantee you cannot gather the required crystals on one layer or one side alone. Also fixes collapse/hold rooms paying no gold, XP or reward choice; adds the four collapse bonuses (base / speed / collect / no-fall); the hold circle no longer sits under the HUD; the every-5-floors guarantee is now per floor; four independent rollback switches were added
+- **v2.9** rooms are no longer all the same: three terrain skeletons (flat hall / double deck / broken bridge) plus three room mechanics (collapsing corridor / hold the zone / time limit); crystals were reduced, tri-coloured and given a hold-to-channel pickup; one-way platforms, fast-fall and head-stomp bounce; enemies gained late-windup armour and anti-air leaps. Mechanic numbers scale with difficulty, with normal fixed at the tested 8 segments / 4.0s / 3 crystals — see the in-game changelog
+- **v2.8.3** attribute entry and codex polish
+- **v2.7.2** feel and display fixes — see the in-game changelog
 - **v2.7** two builds and a fully 2D game: classic mode became real-time 2D, trials were merged in and shut down, 2.6 was frozen
 - **v2.6** 2D trials: turn-based combat rebuilt as a side-scrolling action game
 - **v0.1 → v2.5** from a text roguelike upwards: hero skills, relics, endings, codex, saves, cheat panel, custom difficulty, random events…
 
-Next steps and known trade-offs live in [`待做/`](待做) — load-time performance, more monsters and events, and so on.
+Next steps and known trade-offs live in [`待做/`](待做) — more monsters and random events. Delivered plans and feedback records are archived under [`其他/`](其他).
 
 ---
 
