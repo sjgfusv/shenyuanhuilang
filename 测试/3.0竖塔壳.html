@@ -19,13 +19,13 @@
 <div id="stage"></div>
 <div id="panel">
   <h1>3.0 · 批5 竖塔坐标系壳</h1>
-  <div class="dim">覆盖：一屏宽 / 层数 / 220 层距 / 楼板可穿 / 两面墙 / 纵向相机 / 键位拆分（S 防御 · ↓ 穿一层）/ 一次一层 / 能爬回去。</div>
+  <div class="dim">覆盖：一屏宽 / 层数 / 220 层距 / 楼板可穿 / 两面墙 / 纵向相机 / 键位（S / ↓ 举盾 · 空格穿一层）/ 一次一层 / 能爬回去。</div>
   <button id="rerun">重新跑一遍</button>
   <pre id="out">准备中…</pre>
 </div>
-<script src="../vendor/phaser.min.js?v=20261031-30"></script>
-<script src="../角色形象.js?v=20261031-30"></script>
-<script src="../战斗2D.js?v=20261031-30"></script>
+<script src="../vendor/phaser.min.js?v=20261031-301"></script>
+<script src="../角色形象.js?v=20261031-301"></script>
+<script src="../战斗2D.js?v=20261031-301"></script>
 <script>
 (function () {
   var out = document.getElementById('out'), lines = [], pass = 0, fail = 0;
@@ -51,9 +51,10 @@
   }
 
   async function tapDown(holdMs) {
-    scn.keys.guard2.isDown = true;
+    // 3.0.1：穿层键从 ↓ 换成空格（↓ 回归举盾）
+    scn.keys.drop.isDown = true;
     await sleep(holdMs || 70);
-    scn.keys.guard2.isDown = false;
+    scn.keys.drop.isDown = false;
   }
 
   async function run() {
@@ -83,7 +84,7 @@
     assert(t.walls === 2, '左右两面墙', t.walls);
 
     /* ---------- 2. 楼板可穿 / 墙不可穿 ---------- */
-    section('2. 楼板必须可穿（否则"按 ↓ 下一层"整个不成立）');
+    section('2. 楼板必须可穿（否则"按空格下一层"整个不成立）');
     var deckTile = null, wallTile = null;
     scn.platformTiles.forEach(function (tt) {
       if (!deckTile && tt._towerDeck) deckTile = tt;
@@ -131,42 +132,48 @@
     assert(A.debug().tower.scrollY <= 4, '开局镜头在顶部', A.debug().tower.scrollY);
 
     /* ---------- 5. 键位拆分 ---------- */
-    section('5. 键位拆分：S 防御 · ↓ 穿层（不再共用）');
+    section('5. 键位：S / ↓ 举盾 · 空格穿层（不再共用）');
     scn.touchInput.guardHeld = true;
     await sleep(140);
     assert(scn.guarding === true, 'S / 触摸防御按钮 → 举盾');
     scn.touchInput.guardHeld = false;
     await sleep(160);
     assert(scn.guarding === false, '松手收盾');
-    var yBefore = A.debug().hero.y;
+    // 3.0.1：↓ 回归举盾 —— 这条同时防住"防御键又被穿层键借走"
     scn.keys.guard2.isDown = true;
-    await sleep(140);
-    assert(scn.guarding === false, '↓ 不再举盾（拆开成功）', scn.guarding);
+    await sleep(200);
+    assert(scn.guarding === true, '↓ 举盾（3.0.1 回归）', scn.guarding);
     scn.keys.guard2.isDown = false;
+    await sleep(260);
+    var yBefore = A.debug().hero.y;
+    scn.keys.drop.isDown = true;
+    await sleep(140);
+    assert(scn.guarding === false, '空格不举盾（两个功能彻底分开）', scn.guarding);
+    scn.keys.drop.isDown = false;
     await sleep(700);
     var yAfterOne = A.debug().hero.y;
-    assert(Math.abs(yAfterOne - (yBefore + 220)) <= 14, '按一次 ↓ 下一层（+220）',
+    assert(Math.abs(yAfterOne - (yBefore + 220)) <= 14, '按一次空格下一层（+220）',
       yBefore + ' → ' + yAfterOne);
 
     /* ---------- 6. 一次只下一层 ---------- */
     section('6. 一次只下一层（设计红线）');
     var y2 = A.debug().hero.y;
-    scn.keys.guard2.isDown = true;
+    scn.keys.drop.isDown = true;
     await sleep(1000);              // 按住 1 秒
     var y3 = A.debug().hero.y;
-    scn.keys.guard2.isDown = false;
+    scn.keys.drop.isDown = false;
     await sleep(800);
-    assert(Math.abs(y3 - (y2 + 220)) <= 14, '按住 ↓ 1 秒也只下一层', y2 + ' → ' + y3);
+    assert(Math.abs(y3 - (y2 + 220)) <= 14, '按住空格 1 秒也只下一层', y2 + ' → ' + y3);
 
     var y4 = A.debug().hero.y;
     scn.hero.setVelocityY(-1150);   // 模拟满蓄力跳（跳高 389px）
     await sleep(160);
-    scn.keys.guard2.isDown = true;
-    await sleep(1300);              // 空中按住 ↓（加速下坠）
-    scn.keys.guard2.isDown = false;
+    scn.keys.drop.isDown = true;
+    await sleep(1300);              // 空中按住空格（加速下坠）
+    scn.keys.drop.isDown = false;
     await sleep(500);
     var y5 = A.debug().hero.y;
-    assert(Math.abs(y5 - y4) <= 14, '空中按 ↓ 只加速下坠、不穿层（落回同一层）', y4 + ' → ' + y5);
+    assert(Math.abs(y5 - y4) <= 14, '空中按空格只加速下坠、不穿层（落回同一层）', y4 + ' → ' + y5);
 
     /* ---------- 7. 连续 N 次 = N 层 ---------- */
     section('7. 按 N 次正好下 N 层');
@@ -178,7 +185,7 @@
       await sleep(760);
     }
     var endY = A.debug().hero.y;
-    assert(Math.abs(endY - (startY + 3 * 220)) <= 16, '连按 3 次 ↓ = 下 3 层（660px，0 误差）',
+    assert(Math.abs(endY - (startY + 3 * 220)) <= 16, '连按 3 次空格 = 下 3 层（660px，0 误差）',
       startY + ' → ' + endY + '（差 ' + (endY - startY) + '）');
 
     /* ---------- 8. 能爬回去 ---------- */

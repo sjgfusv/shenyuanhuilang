@@ -672,7 +672,7 @@
     corrupt: { key: 'corrupt', name: '腐化魂晶', color: 0xa8e85a, text: '#a8e85a' }
   };
 
-  /* 加速下坠：空中按下（S / ↓ / 摇杆下推 / 防御键）→ 穿过单向平台落下一层 */
+  /* 加速下坠：空中按住穿层键（空格 / 摇杆下推）→ 快速落向下一层 */
   var FASTFALL = {
     speed: 940,      // 目标下坠速度
     accel: 4200      // 加速度(px/s²)：约 0.1 秒进入高速，手感干脆
@@ -911,12 +911,12 @@
         note: '骨架是每个战斗房的必选维度，和机制是两件事：先看脚下长什么样，再看这间房要你干什么。竖塔是目前唯一不挂机制的骨架（塌陷按横排分段、守点圈在地面）。'
       },
       {
-        title: '竖塔怎么走：S 防御 · ↓ 穿一层',
+        title: '竖塔怎么走：S 防御 · 空格穿一层',
         rows: [
-          ['下行', '站在楼板上按 ↓ 的**瞬间**（按住不算）穿到下一层。一次只下一层 —— 能一路穿到底的话 10 层楼板就等于装饰。'],
+          ['下行', '站在楼板上按**空格**的瞬间（按住不算）穿到下一层。一次只下一层 —— 能一路穿到底的话 10 层楼板就等于装饰。'],
           ['上行', '满蓄力跳高约 ' + Math.round(CHARGE.maxPower * CHARGE.maxPower / (2 * GRAVITY)) + 'px，比层距 ' + TOWER.step + 'px 高、但不到两层的 ' + (TOWER.step * 2) + 'px，所以能一层层跳回去、一次只爬一层。'],
-          ['防御', 'S / 触摸防御按钮 = 举盾；↓ / 摇杆下推 = 穿层。两个功能拆开了，不再共用一个键。'],
-          ['空中的 ↓', '加速下坠，但**不**穿楼板 —— 否则跳一下按住 ↓ 就一路穿到底。'],
+          ['防御', 'S / ↓ / 触摸防御按钮 = 举盾；空格 / 摇杆下推 = 穿层。两个功能拆开了，不再共用一个键。'],
+          ['空中的空格', '加速下坠，但**不**穿楼板 —— 否则跳一下按住空格就一路穿到底。'],
           ['跳劈', '穿层下落时按 J 就是跳劈（非着地即跳劈）—— 竖塔的主力输出是"掉下去砸"，不是"跳起来砸"。'],
           ['楼层读数', '右侧墙边竖排刻痕，第 N 层画 N 道；墙面越往下越暗。HUD 不加层数。']
         ],
@@ -986,9 +986,9 @@
         title: '单向平台 · 加速下坠 · 穿一层',
         rows: [
           ['平台', '只能从上方踩住，从下往上可以直接穿过。'],
-          ['↓（穿层）', '站在薄板上按 ↓ 的瞬间穿下去（一次一层，220ms 后恢复碰撞）；空中按住 ↓ 是加速下坠。'],
-          ['S（防御）', '举盾。3.0 起 S 与 ↓ 拆开了：以前两个键都举盾，现在 ↓ 专职穿层。'],
-          ['横厅', '同一套逻辑：站在浮台上按 ↓ 就能下来，不用再"跳一下再按 ↓"。']
+          ['空格（穿层）', '站在薄板上按空格的瞬间穿下去（一次一层，220ms 后恢复碰撞）；空中按住空格是加速下坠。'],
+          ['S / ↓（防御）', '举盾。3.0.1 起穿层改给空格，↓ 又回到了举盾这一个功能上：站着按 ↓ 是挡，按空格才是往下走。'],
+          ['横厅', '同一套逻辑：站在浮台上按空格就能下来，不用再"跳一下再按 ↓"。']
         ],
         note: ''
       },
@@ -3631,6 +3631,26 @@
     }
 
     /**
+     * 雾层和"这一间是不是竖塔"对齐（3.0.1 · 玩家反馈「竖塔中间有一块红色的地方」）
+     * ------------------------------------------------------------
+     * 病根：雾层是 `add.rectangle(W/2, H+60, W*3, 300, env.fog, alpha)` 且
+     * **scrollFactorY = 1** —— 它跟着世界一起滚。横厅里世界不上下动，它永远
+     * 贴在屏幕底边；竖塔的相机要往下滚 1000+ px，于是这块雾被"滚"进了屏幕中间，
+     * 看起来就像"横屏房间地面背后那块底色漏进来了"（地狱难度雾色正是暗红
+     * `0x6a0a08 @ 0.32`，截图里那块暗红就是它）。
+     * 修法：竖塔里把雾钉死在屏幕底部（scrollFactorY = 0，位置仍是 H+60），
+     * 横厅恢复原来的 0.2 视差。火星粒子同理 —— 它是氛围层，不该待在世界里的
+     * 某个深度上。
+     */
+    syncBackdropScroll() {
+      if (!this.fog) return;
+      var W = this.scale.width, H = this.scale.height;
+      this.fog.setPosition(W / 2, H + 60);
+      this.fog.setScrollFactor(0.2, this._verticalRoom ? 0 : 1);
+      if (this.emberEmitter) this.emberEmitter.setScrollFactor(1, this._verticalRoom ? 0 : 1);
+    }
+
+    /**
      * 应用环境主题（难度 → 星色 / 雾色 / 火星粒子）
      * 阶段5：简单·白星光 普通·蓝星光 困难·暖色 地狱·红色火焰
      */
@@ -3905,7 +3925,7 @@
       this.updateSkillHud();
 
       this.potionText = this.add.text(24, H - 48, '', { fontSize: '14px', color: '#ffb347' }).setOrigin(0, 0.5);
-      this.hintText = this.add.text(W / 2, H - 22, 'A/D 移动 · 按住 W/空格 蓄力跳 · J 挥砍（空中=跳劈）· K 闪避 · E 技能 · L 药水', { fontSize: '13px', color: UI.muted }).setOrigin(0.5);
+      this.hintText = this.add.text(W / 2, H - 22, 'A/D 移动 · 按住 W/↑ 蓄力跳 · J 挥砍（空中=跳劈）· 空格 穿层 · K 闪避 · E 技能 · L 药水', { fontSize: '13px', color: UI.muted }).setOrigin(0.5);
       this.comboText = this.add.text(W / 2, 44, '', { fontSize: '22px', color: UI.title, fontStyle: 'bold' }).setOrigin(0.5).setAlpha(0);
 
       // ===== 层主血条（顶部居中，命名 + 数值内嵌）=====
@@ -4194,8 +4214,11 @@
       this.keys = k.addKeys({
         left: Phaser.Input.Keyboard.KeyCodes.A, left2: Phaser.Input.Keyboard.KeyCodes.LEFT,
         right: Phaser.Input.Keyboard.KeyCodes.D, right2: Phaser.Input.Keyboard.KeyCodes.RIGHT,
-        jump: Phaser.Input.Keyboard.KeyCodes.W, jump2: Phaser.Input.Keyboard.KeyCodes.SPACE,
-        jump3: Phaser.Input.Keyboard.KeyCodes.UP,
+        jump: Phaser.Input.Keyboard.KeyCodes.W, jump3: Phaser.Input.Keyboard.KeyCodes.UP,
+        // 3.0.1（玩家反馈）：空格不再是跳跃键 —— 它改成「穿层」。
+        // 空格原本只是 W 之外的第二个跳跃键，而跳跃还剩 W / ↑ 两个；
+        // 把它换给穿层，正好腾出 ↓ 归还举盾。
+        drop: Phaser.Input.Keyboard.KeyCodes.SPACE,   // 穿脚下的薄板 / 竖塔下一层
         attack: Phaser.Input.Keyboard.KeyCodes.J, potion: Phaser.Input.Keyboard.KeyCodes.L,
         dodge: Phaser.Input.Keyboard.KeyCodes.K,   // 闪避
         skill: Phaser.Input.Keyboard.KeyCodes.E,
@@ -4292,7 +4315,7 @@
       if (this.hintText) {
         this.hintText.setText(isTouchPointer
           ? '摇杆移动（上推=蓄力跳）· 右下按键出手'
-          : 'A/D 移动 · 按住 W/空格 蓄力跳 · J 挥砍（空中=跳劈）· K 闪避 · E 技能 · L 药水');
+          : 'A/D 移动 · 按住 W/↑ 蓄力跳 · J 挥砍（空中=跳劈）· 空格 穿层 · K 闪避 · E 技能 · L 药水');
       }
     }
 
@@ -5980,7 +6003,7 @@
     /** 面板期间（含被 DOM 全屏面板盖住期间）的按键不该在恢复后「补发」（清掉 JustDown 残留） */
     clearStaleInput() {
       var k = this.keys;
-      if (k) ['attack', 'potion', 'jump', 'jump2', 'jump3', 'jump4', 'dodge', 'dodge2', 'guard', 'guard2', 'fury'].forEach(function (n) {
+      if (k) ['attack', 'potion', 'jump', 'drop', 'jump3', 'jump4', 'dodge', 'dodge2', 'guard', 'guard2', 'fury'].forEach(function (n) {
         var key = k[n];
         if (key) { key._justDown = false; key._justUp = false; }
       });
@@ -6787,7 +6810,7 @@
 
       } else if (section === 'skill') {
         out = [
-          { id: 'charge', name: '蓄力跳', tag: '按住 空格 / W / ↑，松开起跳', rows: [['跳跃高度', '轻点 520（约 80px）· 半蓄力 835（约 205px）· 满蓄力 1150（约 380px）'], ['满蓄力耗时', '620ms'], ['代价', '蓄力期间移动速度减半'], ['宽限', '走出平台边缘后仍有约 120ms 可起跳（土狼时间）']], note: '平台都是按满蓄力可及范围生成的，够不到就再多蓄一点。' },
+          { id: 'charge', name: '蓄力跳', tag: '按住 W / ↑，松开起跳', rows: [['跳跃高度', '轻点 520（约 80px）· 半蓄力 835（约 205px）· 满蓄力 1150（约 380px）'], ['满蓄力耗时', '620ms'], ['代价', '蓄力期间移动速度减半'], ['宽限', '走出平台边缘后仍有约 120ms 可起跳（土狼时间）']], note: '平台都是按满蓄力可及范围生成的，够不到就再多蓄一点。' },
           { id: 'dive', name: '跳劈', tag: '滞空时按 J（近战英雄）', rows: [['下坠速度', '960 px/s'], ['下坠命中', '×1.9 伤害 + 额外击退'], ['落地冲击', '半径 130px 范围 ×1.15'], ['限制', '同一敌人一次只结算一次；两次跳劈间隔 360ms']], note: '补刀、清群、突围的主力；空中先蓄力跳再按 J 就能连续跳劈。' },
           { id: 'airshot', name: '空中射击', tag: '滞空时按 J（游侠 / 法师 / 贤者）', rows: [['行为', '自动朝最近的敌人射击'], ['区别', '落地是平射，滞空带俯角'], ['注意', '远程英雄没有跳劈']], note: '三人普攻本来就是远程，空中攻击换成射击而不是下落斩。' },
           { id: 'dodge', name: '闪避（翻滚）', tag: 'K', rows: [['体力消耗', '30 / 100'], ['无敌时间', '320ms'], ['翻滚速度', '520 px/s，持续 260ms'], ['可以取消', '攻击后摇、蓄力']], note: '空中闪避会把下坠速度压到 30% 并逐帧衰减，等于半滞空。' },
@@ -8832,6 +8855,8 @@
 
       // 相机边界与纵向余量：见 applyCameraBounds 的说明（短屏修「跳上台阶看不见」）
       this.applyCameraBounds();
+      // 3.0.1：雾层的滚动方式跟着坐标系走（竖塔纵向滚 1000+，雾不能跟着滚进来）
+      this.syncBackdropScroll();
 
       // ===== P4：机制挂载（与骨架正交）=====
       // 3.0 批5：竖塔**不挂机制** —— 塌陷 / 守点 / 限时全部是按"横向单层地面"设计的
@@ -12441,7 +12466,8 @@
     updateGuard(dt, onGround) {
       var h = this.hero, now = this.time.now;
       var ti = this.touchInput;
-      var held = (this.keys.guard.isDown || ti.guardHeld) &&
+      // 3.0.1：↓ 回到举盾（穿层已改给空格）—— 触摸那边一直用的是「防御」按钮，不受影响
+      var held = (this.keys.guard.isDown || this.keys.guard2.isDown || ti.guardHeld) &&
         !this.dodging && !this.diving && !this.attacking && !this.isCharging && !this.heroDead;
       // v2.9 P1：空中按下是「加速下坠」，不是举盾 —— 两个状态必须互斥，
       // 否则玩家想落下一层时会莫名其妙举着盾飘下去。
@@ -14689,15 +14715,19 @@
         this._wasAirborne = true;
       }
 
-      // ===== v2.9 P1 / 3.0 批5：空中按下 = 加速下坠；站在薄板上按 ↓ = 穿一层 =====
-      // 3.0 把原来共用「防御」的 S 与 ↓ 拆开了（§2.5）：
-      //   S  / 触摸防御按钮          → 举盾（updateGuard 只认 guard，不再认 guard2）
-      //   ↓  / 摇杆下推 / 触摸下推    → 穿脚下的单向平台（横厅）/ 下一层（竖塔）
-      // 好处不只是竖塔：横厅里"从浮台上下去"原来得先跳一下再按 ↓，现在直接按 ↓ 就行，
+      // ===== v2.9 P1 / 3.0.1：空中按下 = 加速下坠；站在薄板上按空格 = 穿一层 =====
+      // 键位一共挪过两次，这里记清楚，后人不要再动：
+      //   2.9     S / ↓        → 都举盾（两个键一个功能）
+      //   3.0     S = 举盾，↓ = 穿层（为了竖塔"站着就能下一层"）
+      //   3.0.1   空格 = 穿层，↓ = 举盾（玩家反馈：↓ 当穿层键不顺手）
+      //          —— 空格原本只是 W 之外的第二个跳跃键，而跳还剩 W / ↑，换得出来。
+      //   S  / ↓ / 触摸防御按钮        → 举盾
+      //   空格 / 摇杆下推 / 触摸下推    → 穿脚下的单向平台（横厅）/ 下一层（竖塔）
+      // 好处不只是竖塔：横厅里"从浮台上下去"原来得先跳一下再按 ↓，现在直接按空格就行，
       // 而且两边是**同一套逻辑**，不用写两份。
       var ti = this.touchInput;
-      var dropHeld = k.guard2.isDown || ti.downHeld;
-      // 只认"按下的那一瞬间"（上升沿），不认"按住"——按住 ↓ 一路穿到底等于把 10 层楼板白做
+      var dropHeld = k.drop.isDown || ti.downHeld;
+      // 只认"按下的那一瞬间"（上升沿），不认"按住"——按住一路穿到底等于把 10 层楼板白做
       var dropJust = dropHeld && !this._dropHeldPrev;
       this._dropHeldPrev = dropHeld;
 
@@ -14708,7 +14738,7 @@
       // 穿层窗口到点 → 恢复碰撞；期间不要被别的分支提前恢复
       if (this._dropUntil && this.time.now > this._dropUntil) this._dropUntil = 0;
 
-      // 加速下坠：空中按住 ↓（竖塔里**不**开穿透，否则跳一下按住就一路穿到底）
+      // 加速下坠：空中按住穿层键（空格 / 摇杆下推）；竖塔里**不**开穿透，否则跳一下按住就一路穿到底
       var fastFall = !onGround && dropHeld && !this.diving && !this.dodging && !this.isCharging && !this.heroDead;
       if (fastFall) {
         h.setVelocityY(Math.min(FASTFALL.speed, Math.max(h.body.velocity.y, 0) + FASTFALL.accel * dt / 1000));
@@ -14723,10 +14753,11 @@
       var guarding = this.guarding;
 
       // ===== 蓄力跳输入（键盘 + 触摸）=====
-      var jumpDown = Phaser.Input.Keyboard.JustDown(k.jump) || Phaser.Input.Keyboard.JustDown(k.jump2)
-        || Phaser.Input.Keyboard.JustDown(k.jump3)
+      // 3.0.1：空格不再是跳跃键 —— 跳跃只剩 W / ↑（触摸是摇杆上推）。
+      // 少一个键不会更难：蓄力跳本来就是"按住"，两个键来回切没有收益。
+      var jumpDown = Phaser.Input.Keyboard.JustDown(k.jump) || Phaser.Input.Keyboard.JustDown(k.jump3)
         || ti.jumpPressed;
-      var jumpHeld = k.jump.isDown || k.jump2.isDown || k.jump3.isDown || ti.jumpHeld || ti.joyJumpHeld;
+      var jumpHeld = k.jump.isDown || k.jump3.isDown || ti.jumpHeld || ti.joyJumpHeld;
       ti.jumpPressed = false;
 
       // 在地面（或土狼宽限内）按下 → 开始蓄力：此时不下蹲起跳，只积蓄力量
@@ -16457,7 +16488,7 @@
     /** 这 3 秒内有没有任何输入（读输入层，不读位移） */
     inputActiveNow() {
       var k = this.keys || {};
-      var ids = ['left', 'left2', 'right', 'right2', 'jump', 'jump2', 'jump3',
+      var ids = ['left', 'left2', 'right', 'right2', 'jump', 'drop', 'jump3',
         'attack', 'potion', 'dodge', 'skill', 'guard', 'guard2', 'fury'];
       for (var i = 0; i < ids.length; i++) {
         if (k[ids[i]] && k[ids[i]].isDown) return true;
@@ -18409,7 +18440,7 @@
           console.log(' 渲染: ' + (state.renderMode === 'webgl' ? 'WebGL' : 'Canvas（已自动降画质）') +
             (state.compatMode ? ' · 兼容模式' : '') + ' · 画质 ' + state.quality);
           console.log(' 设备: ' + (isAppleTouch() ? '苹果移动端' : '其他') + (isStandalone() ? '（主屏幕启动）' : ''));
-          console.log(' 操作: A/D 或 ←/→ 移动 · W/空格 跳跃 · J/鼠标 挥砍 · L 药水');
+          console.log(' 操作: A/D 或 ←/→ 移动 · W/↑ 跳跃 · 空格 穿层 · J/鼠标 挥砍 · L 药水');
           console.log('========================================');
           return true;
         } catch (e) {
