@@ -1678,7 +1678,7 @@ function populateCheatBonusSelect() {
     { id: 'crit_damage', title: '致命打击', description: '暴击伤害 +20%' },
     { id: 'vampire', title: '吸血之刃', description: '攻击时恢复 2 点生命' },
     { id: 'thorn', title: '荆棘护甲', description: '受到攻击反弹 2 点伤害' },
-    { id: 'life_shield', title: '生命护盾', description: '每回合获得 2 点护盾' },
+    { id: 'life_shield', title: '生命护盾', description: '每间战斗房开始获得 2 点护盾' },
     { id: 'double_gold', title: '双倍金币', description: '战斗金币 +50%' },
     { id: 'exp_boost', title: '经验加成', description: '获得额外经验' },
     { id: 'lucky', title: '会心一击', description: '暴击率 +10%' },
@@ -2033,7 +2033,7 @@ function applyTrialBonusEffect(bonusId) {
       break;
     case 'life_shield':
       t.hasLifeShield = true;
-      addLog('获得生命护盾，每回合+2护盾');
+      addLog('获得生命护盾，每间战斗房开始 +2 护盾');
       break;
     case 'double_gold':
       t.hasDoubleGold = true;
@@ -2179,7 +2179,7 @@ function cheatAddBonus() {
     { id: 'crit_damage', title: '致命打击', apply: () => { state.critDamage = (state.critDamage || 150) + 20; addLog(`💢 暴击伤害提升至 ${state.critDamage}%`); spawnDamageFloat('+20%', 'crit'); } },
     { id: 'vampire', title: '吸血之刃', apply: () => { state.vampireLevel = (state.vampireLevel || 0) + 1; addLog('获得吸血之刃，攻击恢复2点生命'); spawnDamageFloat(2, 'vampire'); } },
     { id: 'thorn', title: '荆棘护甲', apply: () => { state.thornLevel = (state.thornLevel || 0) + 1; addLog('获得荆棘护甲，反弹2点伤害'); spawnDamageFloat(2, 'thorn'); } },
-    { id: 'life_shield', title: '生命护盾', apply: () => { state.hasLifeShield = true; addLog('获得生命护盾，每回合+2护盾'); } },
+    { id: 'life_shield', title: '生命护盾', apply: () => { state.hasLifeShield = true; addLog('获得生命护盾，每间战斗房开始 +2 护盾'); } },
     { id: 'double_gold', title: '双倍金币', apply: () => { state.hasDoubleGold = true; addLog('获得双倍金币'); } },
     { id: 'exp_boost', title: '经验加成', apply: () => { state.hasExpBoost = true; addLog('获得经验加成'); } },
     { id: 'lucky', title: '会心一击', apply: () => { addLuckyLevel(1, '开局增益'); } },
@@ -6176,6 +6176,12 @@ function activateHeroSkill() {
 
 function prepareStrengthPotion() {
   if (state.mode !== 'bossPrep') return;
+  // 3.0 批2 · B3：2D 接管时不存在「Boss 前界面」，也不存在「下一回合」——
+  // 力量药水在 2D 里是**进战斗房自动喝一瓶、本房间攻击 ×1.25**（见 战斗2D.js 的 buildLevel）。
+  // 所以这条回合制路径直接返回：不再写 pendingAttackBoost（引擎从不读它，写进去就是死字段）。
+  try {
+    if (window.经典2D && typeof window.经典2D.active === 'function' && window.经典2D.active()) return;
+  } catch (e) { /* 忽略 */ }
   if (state.player.strengthPotions <= 0) {
     addLog('你没有力量药水可使用。');
     return;
@@ -6844,18 +6850,14 @@ function getEncyclopediaData() {
         description: (it.desc || '') + (it.rarity === 'rare' ? '　· 稀有' : '')
       }));
     })(),
-    '增益': [
-      { title: '吸血之刃', description: '攻击时恢复 2 点生命（战斗中生效）' },
-      { title: '荆棘护甲', description: '受到攻击反弹 2 点伤害（战斗中生效）' },
-      { title: '生命护盾', description: '每回合获得 2 点护盾（战斗中生效）' },
-      { title: '双倍金币', description: '战斗金币 +50%（战斗中生效）' },
-      { title: '会心一击', description: '暴击率 +10%（战斗中生效）' },
-      { title: '古神眷顾', description: '古老祭坛25%不扣血,15%双倍遗物,1%四倍遗物（特殊增益）' },
-      { title: '暴击强化', description: '暴击率 +10%（战斗中生效）' },
-      { title: '荆棘强化', description: '反弹伤害 +1（战斗中生效）' },
-      { title: '吸血强化', description: '吸血 +1（战斗中生效）' },
-      { title: '致命打击', description: '暴击伤害 +20%（战斗中生效）' }
-    ],
+    '增益': (() => {
+      // 3.0 批3：数据源 = BONUS_POOL（开局增益的**唯一实现**），不再手抄。
+      // 之前这里抄了 13 条，而池子里有 30 项 —— 图鉴既漏了 17 项，
+      // 描述也停在文字模式（"每回合获得 2 点护盾"），而 2D 里那已经改成
+      // "每房间开始 +2 护盾"了（批2 的语义重译）。手抄一份迟早说谎，
+      // 与「遗物」「道具&商品」两条用的是同一个原则（产品约束 5：图鉴与运行时同源）。
+      return BONUS_POOL.map(b => ({ title: b.title, description: b.description }));
+    })(),
     '英雄技能': heroOptions.map(hero => ({
       title: `${hero.name}：${hero.skill.name}`,
       description: `${hero.skill.description}` + (hero.skill.active ? ` 主动技能：${hero.skill.active.name} - ${hero.skill.active.description}` : '')
@@ -7010,11 +7012,25 @@ function getRelicOptions(ignoreBlacklist = false) {
   return baseRelics;
 }
 
+// 遗物显示名（3.0 批3 · C 方案）
+// ------------------------------------------------------------
+// 内核手里是文字时代的老 label（"战斗怒火"），而 2D 的 HUD 上显示的是引擎名（"重击"）——
+// 同一件东西两个名字，中间那次转换对玩家完全隐形。凡是**给玩家看的**遗物名字，
+// 一律先问宿主翻译（宿主那侧与 HUD 用的是同一个 relicView），没宿主就原样返回。
+function relicDisplayName(label) {
+  try {
+    if (window.经典2D && typeof window.经典2D.relicDisplayName === 'function') {
+      return window.经典2D.relicDisplayName(label) || label;
+    }
+  } catch (e) { /* 忽略：翻译失败就退回原名，绝不因为翻译问题丢遗物 */ }
+  return label;
+}
+
 function chooseRelic(index, advance = true) {
   const relic = getRelicOptions()[index];
   if (!relic) return;
   state.relics.push(relic);
-  addLog(`你获得了遗物：${relic.label}`);
+  addLog(`你获得了遗物：${relicDisplayName(relic.label)}`);
   relic.apply();
 
   setTimeout(() => {
@@ -7085,7 +7101,7 @@ function chooseRelicByRarity(advance = true) {
   if (!relic) return;
 
   state.relics.push(relic);
-  addLog(`你获得了遗物：${relic.label}`);
+  addLog(`你获得了遗物：${relicDisplayName(relic.label)}`);
   relic.apply();
   
   setTimeout(() => {
@@ -7130,7 +7146,7 @@ const BONUS_POOL = [
     { id: 'crit_damage', title: '致命打击', description: '暴击伤害 +20%', apply: () => { state.critDamage = (state.critDamage || 150) + 20; addLog(`💢 暴击伤害提升至 ${state.critDamage}%`); spawnDamageFloat('+20%', 'crit'); } },
     { id: 'vampire', title: '吸血之刃', description: '攻击时恢复 2 点生命', apply: () => { state.vampireLevel = (state.vampireLevel || 0) + 1; addLog('获得吸血之刃，攻击恢复2点生命'); spawnDamageFloat(2, 'vampire'); } },
     { id: 'thorn', title: '荆棘护甲', description: '受到攻击反弹 2 点伤害', apply: () => { state.thornLevel = (state.thornLevel || 0) + 1; addLog('获得荆棘护甲，反弹2点伤害'); spawnDamageFloat(2, 'thorn'); } },
-    { id: 'life_shield', title: '生命护盾', description: '每回合获得 2 点护盾', apply: () => { state.hasLifeShield = true; addLog('获得生命护盾，每回合+2护盾'); } },
+    { id: 'life_shield', title: '生命护盾', description: '每间战斗房开始获得 2 点护盾', apply: () => { state.hasLifeShield = true; addLog('获得生命护盾，每间战斗房开始 +2 护盾'); } },
     { id: 'double_gold', title: '双倍金币', description: '战斗金币 +50%', apply: () => { state.hasDoubleGold = true; addLog('获得双倍金币'); } },
     { id: 'exp_boost', title: '经验加成', description: '获得额外经验', apply: () => { state.hasExpBoost = true; addLog('获得经验加成'); } },
     { id: 'lucky', title: '会心一击', description: '暴击率 +10%', apply: () => { addLuckyLevel(1, '开局增益'); } },
@@ -7449,7 +7465,7 @@ const ALL_EVENT_OPTIONS = [
           if (!relic || typeof relic.apply !== 'function') continue;
           state.relics.push(relic);
           relic.apply();
-          addLog(`获得遗物：${relic.label}`);
+          addLog(`获得遗物：${relicDisplayName(relic.label)}`);
         }
         addLog(`暗影交易完成！获得 5 件遗物！`);
         if (window.AbyssAudio && typeof window.AbyssAudio.sfx === 'function') {
@@ -7639,7 +7655,7 @@ const ALL_EVENT_OPTIONS = [
         const relic = getRandomRelicByRarity();
         state.relics.push(relic);
         relic.apply();
-        addLog(`你踏入了这片破败之地，长时间的探索后，你发现了一件遗物：${relic.label}`);
+        addLog(`你踏入了这片破败之地，长时间的探索后，你发现了一件遗物：${relicDisplayName(relic.label)}`);
         spawnDamageFloat('✨', 'relic');
       }
       advanceRoom();
@@ -8603,6 +8619,26 @@ function renderChangelog() {
         '守点房保持顺手节奏：守住核心后立刻结算并弹奖励，选完直接打开地图；传送门仍然亮着，关掉地图后还能走门兜底。普通 / 塌陷 / 限时 / 商店 / Boss 仍必须走到传送门才结算',
         '修复关闭地图会重复发清房奖励的问题；每间房只结算一次。settleAtDoor 关闭时全部房间退回「开门即结算」的实验模式',
         '更新守点 / 限时 / 过门验证，7 个回归页共 365 项断言通过；另用真实主界面验证守点房完成即弹奖励、选完自动开图，普通房 / 商店 / Boss 仍必须过门，且无重复结算'
+      ]
+    },
+    {
+      version:'3.0',
+      date:'把房间转 90° · 把数值接回引擎',
+      changes:[
+        '【清迁移遗留】战斗奖励与随机事件选完立刻下发：原来这两个入口改了内核属性却不 pushStats，引擎要等到下次商店 / 遗物才一次性跳变 —— 玩家的体感就是「点了没反应」。现在 20 个随机事件全部真实生效（原本 6 个完全无效或净亏，含「暗影交易」−20 生命换 5 件遗物结果什么都没发生、「神秘商人」−30 金币遗物一件不到）',
+        '护盾建立双向回写：引擎扣盾 / 加盾都会实时回写内核，扣光盾再拿遗物不会白送满盾，战士开局的坚韧之盾也不会一进商店就消失。新增通用通道 consume / gain / syncVitals',
+        '经验成为第二货币：金币不够时可以用经验买商品（经验价 = 金币价），知识祭坛的 −20 经验、战斗导师的 −15 经验终于有真实代价',
+        '力量药水补实现：进战斗房自动喝一瓶，本房间攻击 ×1.25（HUD 的「攻」后面挂 ×1.25）；房间结束后数量真的少 1。原来它在 2D 里既没实现也没入口，商店却照卖 18 金币',
+        '两个彻底无效的开局增益接上：「双倍金币」战斗金币 ×1.5、「生命护盾」每房间开始 +2 护盾（文字模式是每回合，2D 没有回合，按房间重译）',
+        '遗物名字统一（C 方案）：保留老 17 件，但事件日志与开局增益直接写引擎显示名 —— 日志写「重击」，HUD 上也显示「重击」，不再出现「战斗怒火」和「重击」是同一件东西的情况。图鉴「增益」也改成读开局增益池（原来手抄的 13 条既漏了 17 项，描述还停在文字模式）',
+        '【拿了看得见】奖励卡片选前就写清楚会变成多少（「攻击 5 → 6」）；选完弹出 1.2 秒的变化横幅（最多 4 行，超出合并「等 N 项」，无变化不弹）；HUD 对应属性位放大回弹 + 数字滚动。六个入口（奖励 / 事件 / 裂隙 / 遗物 / 商店 / 休整 / 祭坛）一次覆盖，以后新增任何入口都自动有反馈',
+        '【竖塔】真正的垂直房间：把房间转 90° —— 宽度锁一屏（横向完全不滚）、向下延伸 1400~2200px、每 220px 一层完整楼板、左右两面真墙、相机纵向滚动。不是「多堆几个浮台」，是换坐标系',
+        'S 防御 / ↓ 穿一层，两个键拆开：站在楼板上按 ↓ 的瞬间下一层，站着就能下、不用特地跳一下；一次只下一层（按住不算），否则 10 层楼板等于装饰。同样一套逻辑让横厅里从浮台下来也不必再「跳一下再按 ↓」',
+        '竖塔里敌人也会穿层追下来（一次一层、冷却 1.2s，不会一群同时灌下来）；远程怪的箭能穿 1 层楼板（穿过时楼板闪一下 = 这一发从上面来的线索）；飞行怪无视楼板但仍受边界',
+        '五个机关陷阱（只在竖塔，每层 60% 概率、其中 20% 是两个、井底层没有）：穿刺（脚下，0.25s 视觉预警）、坠物（头顶，0.35s **只有声音**、没有地面阴影）、落板（站久了塌，不伤害但把你掉下一层 —— 唯一惩罚犹豫的陷阱）、夹击门（上下合拢，100% + 硬直）、暗箭（侧墙，跳起来躲）。五种陷阱五种躲法，且不会出现「夹击门+坠物」这种无解组合',
+        '竖塔不加 HUD 层数：改用右侧墙边的层号刻痕（第 N 层画 N 道）+ 墙面越往下越暗，玩家不用看别处就知道自己在第几层',
+        '骨架从三种变四种：平厅 35 / 双层 30 / 断桥 20 / 竖塔 15（第 6 层起进池子）。回退开关：SKELETON.vertical = off 一键退回三种骨架；towerStep / towerEnemyChase 可单独调',
+        '新增验证台：测试/3.0通道验证台.html（61 项）、测试/3.0竖塔壳.html（112 项）、测试/3.0总回归.html（串行跑 7 页共 367 项）。原有回归全部通过'
       ]
     }
   ];

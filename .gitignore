@@ -11,6 +11,7 @@
 
 # ── AI 工作目录（项目记忆 / 缓存 / 工具状态）──
 .workbuddy-ai/
+.impeccable/
 
 # ── 一次性脚本与备份 ──
 其他/_fix-*.js

@@ -92,8 +92,78 @@
     burySquash: 0.42   // 压扁到原本高度的比例
   };
 
-  // 闪避（翻滚冲刺）：消耗体力换取短暂无敌。
-  // 在敌人攻击命中的瞬间闪避 → 完美闪避：体力全额返还 + 震开周围敌人 + 锐利强化
+  // 力量药水（3.0 批2 · B2）
+  // ------------------------------------------------------------
+  // 文字模式是「下一回合攻击 +3」（pendingAttackBoost），但 2D 一次挥砍只有 5~15 伤害、
+  // 一场战斗 15~20 刀 —— "下一次 +3" 等于一次性 +3 总伤害，在实时战斗里等于没有。
+  // 所以语义重译成「下一间战斗房，攻击 ×1.25」：进房自动喝一瓶，不需要新按键
+  // （触摸端底部已经排了 8 个按钮，再加一个会挤爆）。
+  // 数值校准（文档 §1.8）：18 金 / 一场约 18 刀 / 攻击 10 → 约 +45 总伤害，且不跨房间，
+  // 与「锐利之刃 20 金永久 +2」（+36 且累积）同档。
+  var STRENGTH_POTION = {
+    mult: 1.25
+  };
+
+  // 竖塔（3.0 议题二 · §2.4「把房间转 90°」）
+  // ------------------------------------------------------------
+  // 横厅：房间是横向长条、只有一层地面、相机横向滚。
+  // 竖塔：宽度锁**一屏**（横向完全不滚）、长度搬到 y 轴（roomDepth）、
+  //       每 220px 一层**完整楼板**、相机纵向滚、左右两面真墙。
+  // 这不是"多堆几个浮台"，是把整个关卡坐标系旋转 90°。
+  //
+  // 为什么层距是 220（§2.5 的验算，实测参数在下面）：
+  //   手机横屏可用战斗区只有 H − hudSafeTop ≈ 200px，层距超过 240 就是"盲跳下一层"；
+  //   满蓄力跳高 = 1150² / (2 × 1700) ≈ 389px > 220 → 能一层层往上爬回去，
+  //   但 389 < 440（两层）→ 一次只能爬一层，这正是"能回头补漏"的前提。
+  //   层间净空 = 220 − 28（楼板视觉厚）= 192px > 玩家 64 + 守卫 60 = 124 ✓
+  var TOWER = {
+    step: 220,        // 层距：相邻楼板顶面（= 碰撞面）的间距
+    topPad: 200,      // 第 1 层楼板之上留的空白（出生点 + HUD 下沿）
+    wallPx: 24,       // 左右墙厚度
+    dropVy: 120,      // 穿层初速：220ms 内约下落 67px，刚穿楼板、远不到下一层
+    dropMs: 220,      // 穿层窗口（到点强制恢复碰撞 = "一次只下一层"）
+    depthBase: 1400,  // 房间深 = min(depthBase + floor × depthStep, depthMax)
+    depthStep: 90,
+    depthMax: 2200,
+    // 批7：敌人穿层追击 —— 回退开关 towerEnemyChase:false 即整条关掉（§2.11）
+    enemyChase: true,
+    dropCooldown: 1200   // 同一只怪两次穿层之间的冷却（错开落地，井底不堆叠）
+  };
+
+  // 机关陷阱（3.0 议题二 · §2.7~2.8）—— **只在竖塔里做**，横向房间一行不动
+  // ------------------------------------------------------------
+  // 为什么不能照搬落石：`spawnRockfall` 的 warnMs 是 600ms，而玩家跑速 250px/s ——
+  // 600ms 能跑 150px，所以落石**永远打不到人**。它实际的作用是"把玩家从这一块赶走"，
+  // 是区域封锁，不是伤害。陷阱要有用，必须打破玩家的四条预测模型：
+  //   ①"有预警我就躲得开" → 预警可以只给一半（只有声音 / 只在视野外）
+  //   ②"陷阱在固定位置"   → 位置每局重掷，不能背板
+  //   ③"陷阱在地面上"     → 来自脚下、头顶、侧面
+  //   ④"陷阱 = 伤害"     → 也可以是位移（把你打到下一层）
+  // 并且必须同时做到三件事（§2.7 的三层模型）：
+  //   ① 惊喜（第一次遇到时预警在视野盲区）② 知识（中招一次后能认出征兆）
+  //   ③ 技术（征兆 + 短预警：够反应，但不能犹豫）
+  // **红线：不做纯随机伤害。** 被阴了应该觉得"我漏看了线索"，不是"这游戏乱来"。
+  var TRAP = {
+    chance: 0.60,        // 每层 60% 有陷阱（作者已定 D5）
+    doubleChance: 0.20,  // 有陷阱时 20% 是两个（先掷有没有 → 再掷几个 → 再掷哪个）
+    cooldown: 3000,      // 同一陷阱触发后 3s 内不再触发（防止连续吃同一招）
+    // 权重 = "已经确定这一层有陷阱，且只放一个"时五种里抽中哪个（合计 100）
+    // ⚠️ 口径：不是"每层独立掷五次"，否则会算出"一层里可能同时有三个陷阱"
+    kinds: {
+      // ① 穿刺：脚下刺上来。预警是"视觉盲区"（玩家的注意力在水平方向的怪上，脚下没人看）
+      spike: { warn: 250, dmgPct: 0.60, w: 48, stay: 600, knock: 90, weight: 25 },
+      // ② 坠物：头顶砸下来。预警**只有声音**（玩家看不到上层，落石有阴影是因为它在你视野内）
+      fall:  { warn: 350, dmgPct: 0.80, w: 64, stay: 0, knock: 170, weight: 25 },
+      // ③ 落板：站久了会塌。**不伤害**，但把人掉到下一层 —— 唯一一个"惩罚犹豫"的陷阱
+      plate: { warn: 500, dmgPct: 0, w: 96, stay: 2500, decay: 0.5, knock: 0, weight: 17 },
+      // ④ 夹击门：上下合拢。0.45s / 80px 才是"能跑出去"的组合（120px 时 0.4s 跑不出去）
+      press: { warn: 450, dmgPct: 1.00, w: 80, stay: 400, stun: 600, knock: 140, weight: 13 },
+      // ⑤ 暗箭：侧墙射的。竖塔的墙是新东西 —— 玩家不知道墙上会长机关
+      arrow: { warn: 300, dmgPct: 0.50, w: 0, stay: 0, once: true, knock: 120, weight: 20 }
+    }
+  };
+
+  // 闪避（翻滚冲刺）：消耗体力换取短暂无敌。  // 在敌人攻击命中的瞬间闪避 → 完美闪避：体力全额返还 + 震开周围敌人 + 锐利强化
   var DODGE = {
     cost: 30,           // 体力消耗
     speed: 520,         // 冲刺速度(px/s)
@@ -669,11 +739,13 @@
      ============================================================ */
   var SKELETON = {
     mode: 'skeleton',
-    // 已启用的骨架：P0 只有平厅；P3 加入双层 / 断桥
-    enabled: ['flat', 'double', 'bridge'],
+    // 已启用的骨架：P0 只有平厅；P3 加入双层 / 断桥；3.0 批9 加入竖塔
+    enabled: ['flat', 'double', 'bridge', 'vertical'],
     // 目标分布（第 16 层以后）。真正的分布按层数走 skeletonWeightTable()
-    weights: { flat: 40, double: 35, bridge: 25 },
-    names: { flat: '平厅', double: '双层', bridge: '断桥' },
+    weights: { flat: 35, double: 30, bridge: 20, vertical: 15 },
+    names: { flat: '平厅', double: '双层', bridge: '断桥', vertical: '竖塔' },
+    // 3.0 批9 的回退开关（§2.11 / §3.x）：把 vertical 从 enabled 里摘掉即"不出现竖塔"
+    vertical: 'on',     // 'on' | 'off'
     last: null,        // 调试：最近一次抽签结果
     samples: 0         // 调试：累计抽签次数
   };
@@ -828,14 +900,39 @@
     var sec = function (ms) { return (ms / 1000) + 's'; };
     return [
       {
-        title: '地形骨架：平厅 / 双层 / 断桥',
+        title: '地形骨架：平厅 / 双层 / 断桥 / 竖塔',
         rows: [
           ['平厅', '一整条地面 + 2~3 个单向平台；平台能从下方跳上去，也能靠踩头弹跳借力。'],
           ['双层', '实体上层 + 1~2 个连通口，上层常驻远程怪；视口太矮放不下时自动退回平厅。'],
           ['断桥', '地面断 1~2 处，掉下去扣最大生命 ' + pit + '%（普通），传送到缺口右侧最近的安全地面，不往回送。'],
-          ['抽签', '第 1 层固定平厅；第 16 层以后平厅 ' + SKELETON.weights.flat + ' / 双层 ' + SKELETON.weights.double + ' / 断桥 ' + SKELETON.weights.bridge + '。层主房 / 非战斗房 / 起点房固定平厅。']
+          ['竖塔', '房间转了 90°：宽度锁一屏（横向不滚）、向下延伸 ' + (TOWER.depthBase / 1000).toFixed(1) + '~' + (TOWER.depthMax / 1000).toFixed(1) + ' 千像素、每 ' + TOWER.step + 'px 一层完整楼板，左右两面真墙。'],
+          ['抽签', '第 1 层固定平厅；第 6 层起进池子；第 16 层以后平厅 ' + SKELETON.weights.flat + ' / 双层 ' + SKELETON.weights.double + ' / 断桥 ' + SKELETON.weights.bridge + ' / 竖塔 ' + SKELETON.weights.vertical + '。层主房 / 非战斗房 / 起点房 / 精英房 / 镜像房固定平厅。']
         ],
-        note: '骨架是每个战斗房的必选维度，和机制是两件事：先看脚下长什么样，再看这间房要你干什么。'
+        note: '骨架是每个战斗房的必选维度，和机制是两件事：先看脚下长什么样，再看这间房要你干什么。竖塔是目前唯一不挂机制的骨架（塌陷按横排分段、守点圈在地面）。'
+      },
+      {
+        title: '竖塔怎么走：S 防御 · ↓ 穿一层',
+        rows: [
+          ['下行', '站在楼板上按 ↓ 的**瞬间**（按住不算）穿到下一层。一次只下一层 —— 能一路穿到底的话 10 层楼板就等于装饰。'],
+          ['上行', '满蓄力跳高约 ' + Math.round(CHARGE.maxPower * CHARGE.maxPower / (2 * GRAVITY)) + 'px，比层距 ' + TOWER.step + 'px 高、但不到两层的 ' + (TOWER.step * 2) + 'px，所以能一层层跳回去、一次只爬一层。'],
+          ['防御', 'S / 触摸防御按钮 = 举盾；↓ / 摇杆下推 = 穿层。两个功能拆开了，不再共用一个键。'],
+          ['空中的 ↓', '加速下坠，但**不**穿楼板 —— 否则跳一下按住 ↓ 就一路穿到底。'],
+          ['跳劈', '穿层下落时按 J 就是跳劈（非着地即跳劈）—— 竖塔的主力输出是"掉下去砸"，不是"跳起来砸"。'],
+          ['楼层读数', '右侧墙边竖排刻痕，第 N 层画 N 道；墙面越往下越暗。HUD 不加层数。']
+        ],
+        note: '竖塔里每个敌人也会穿层追下来（一次一层、冷却 1.2s），所以跳过的层不会永远空着；井底层不放怪，那是汇合决战的地方。'
+      },
+      {
+        title: '机关陷阱（只在竖塔）',
+        rows: [
+          ['密度', '每层 ' + Math.round(TRAP.chance * 100) + '% 有陷阱，其中 ' + Math.round(TRAP.doubleChance * 100) + '% 是两个；井底层没有；同层最多两个，且不会出现"无解组合"。'],
+          ['穿刺', '脚下刺上来（预览 ' + (TRAP.kinds.spike.warn / 1000).toFixed(2) + 's）：楼板先出现小孔 + 金属声，横向走出 ' + TRAP.kinds.spike.w + 'px 或跳起来就能躲。要在上面站 ' + (TRAP.kinds.spike.stay / 1000).toFixed(1) + 's 才触发。'],
+          ['坠物', '头顶砸下来（' + (TRAP.kinds.fall.warn / 1000).toFixed(2) + 's）：**只有声音**、没有地面阴影 —— 你看不到上一层的楼板后面。横向走开 ' + TRAP.kinds.fall.w + 'px 或举盾。'],
+          ['落板', '站久了会塌（累计 ' + (TRAP.kinds.plate.stay / 1000).toFixed(1) + 's 开始裂）：不伤害，但把你掉到下一层。它惩罚的是犹豫。'],
+          ['夹击门', '上下合拢（' + (TRAP.kinds.press.warn / 1000).toFixed(2) + 's 抖动预警）：攻击力 100% + 硬直 0.6s。宽度 ' + TRAP.kinds.press.w + 'px，跑得出去；也能跳上沿躲开。'],
+          ['暗箭', '侧墙射出来（' + (TRAP.kinds.arrow.warn / 1000).toFixed(2) + 's）：箭贴楼板上方飞过，**跳起来**就能躲。每层最多触发一次。']
+        ],
+        note: '红线：不做纯随机伤害。每个陷阱都有可学习的征兆，第一次只是藏在视野盲区里。闪避的无敌帧期间不结算。'
       },
       {
         title: '塌陷',
@@ -886,11 +983,12 @@
         note: ''
       },
       {
-        title: '单向平台与加速下坠',
+        title: '单向平台 · 加速下坠 · 穿一层',
         rows: [
           ['平台', '只能从上方踩住，从下往上可以直接穿过。'],
-          ['加速下坠', '空中按下（S / ↓ / 摇杆下推 / 盾键）→ 高速下坠并穿过单向平台。'],
-          ['地面按下', '仍然是防御 —— 两者不冲突：空中下坠、地面举盾。']
+          ['↓（穿层）', '站在薄板上按 ↓ 的瞬间穿下去（一次一层，220ms 后恢复碰撞）；空中按住 ↓ 是加速下坠。'],
+          ['S（防御）', '举盾。3.0 起 S 与 ↓ 拆开了：以前两个键都举盾，现在 ↓ 专职穿层。'],
+          ['横厅', '同一套逻辑：站在浮台上按 ↓ 就能下来，不用再"跳一下再按 ↓"。']
         ],
         note: ''
       },
@@ -3422,8 +3520,11 @@
       this.buildInput();
 
       // 碰撞：主角与敌人都会站在地形上
-      this.physics.add.collider(this.hero, this.solids);
-      this.physics.add.collider(this.enemyGroup, this.solids);
+      // 3.0 批7：两条 collider 都带上"地形过滤"，把「穿楼板」做成**单方级别**的：
+      //   玩家按 ↓ 穿层 / 敌人 dropChase 穿层，都只放行**这一方自己**，
+      //   不再去关平台 body（那是全局的：玩家一穿层，同层敌人跟着掉下去）。
+      this.physics.add.collider(this.hero, this.solids, null, this.heroTileFilter, this);
+      this.physics.add.collider(this.enemyGroup, this.solids, null, this.enemyTileFilter, this);
       // 主角与敌人互相阻挡（不可穿过身体）。
       // 留一个引用：跳劈下坠期间要临时关掉它（见 tryDiveAttack），不然英雄会把敌人
       // 一帧一帧地挤进地面里去。
@@ -5703,6 +5804,10 @@
       if (p.execute !== undefined) h.execute = p.execute;
       if (p.shield !== undefined) h.shield = p.shield;
       if (p.potions !== undefined) h.potions = p.potions;
+      // 3.0 批2 · B2：力量药水瓶数（引擎在进战斗房时自己消耗）
+      if (p.strength !== undefined) h.strength = Math.max(0, Math.round(p.strength));
+      // 3.0 批2 · B4：生命护盾（每房间开始 +2 盾）—— 2D 没有"回合"，改成房间级语义
+      if (p.lifeShield !== undefined) h.lifeShield = !!p.lifeShield;
       this.refreshHud();
     }
 
@@ -6010,6 +6115,10 @@
       // 遗物：护盾共鸣 —— 任何来源获得的护盾都额外 +N（药水 / 技能 / 格挡 / 魂晶一并生效）
       var gain = n + (n > 0 ? this.relicFx('shieldGain', 0) : 0);
       h.shield += gain;
+      // 3.0 批1 · A4（反向）：引擎加的盾也要让内核记账。
+      // 战士开局「坚韧之盾」+3 / 魂晶回盾 / 完美格挡回盾都是引擎单方面加的，
+      // 内核不知道 → 下一次 pushStats 就把它们抹掉，玩家会看到盾凭空消失。
+      callBridge('gain', 'shield', gain);
       this.showFloat(h.x, h.y - 80, '+' + gain + ' 护盾', UI.accent, 16);
       this.spark(h.x, h.y - 26, 0x5fd0e0);
       if (tag) this.showFloat(h.x, h.y - 102, tag, '#9fe0c0', 13);
@@ -6117,6 +6226,10 @@
     applyRoomStartPassive() {
       if (this.skillId === 'warrior') this.addShield(3, '坚韧之盾');
       else if (this.skillId === 'paladin') this.addShield(4, '圣光护盾');
+      // 3.0 批2 · B4：开局增益「生命护盾」。文字模式是"每回合 +2 护盾"，
+      // 而 2D 没有回合 —— 重译成「每房间开始 +2 护盾」（文档定案 S3），
+      // 语义等价（都是一场战斗里持续补盾），也不需要新的计时器。
+      if (this.hero.lifeShield) this.addShield(2, '生命护盾');
     }
 
     /** 被动：伤害修正（首击 / 概率 / 低血，对应文字模式的首回合、30% 概率、生命低于 50%） */
@@ -8579,8 +8692,42 @@
       var H = this.scale.height;
       var head = this.hudSafeTop() + Math.round(H * 0.8);
       this._camHeadroom = head;
+      // 竖塔：纵向余量**不需要**（那套 −head … +head 是给横厅"往上跳也看得见"的），
+      // 竖塔的每一个像素纵向空间都是有效房间 —— 世界从 0 到井底，相机滚完整个深度。
+      if (this._verticalRoom) {
+        var bottom = this.groundY + 96;
+        this.physics.world.setBounds(0, -200, this.levelWidth, bottom + 400);
+        this.cameras.main.setBounds(0, 0, this.levelWidth, bottom);
+        return;
+      }
       this.physics.world.setBounds(0, -600, this.levelWidth, H + 1200);
       this.cameras.main.setBounds(0, -head, this.levelWidth, H + head);
+    }
+
+    /**
+     * 竖塔相机（3.0 批5 · §2.9 第 4 项）
+     * ------------------------------------------------------------
+     * 横厅是"横纵都跟、带死区、带跟随偏移"；竖塔要的是**横向锁定 + 纵向跟随**。
+     * 横向锁定的实现不是特判 —— 而是 `levelWidth === 视口宽`，
+     * 相机在 x 方向**无处可滚**（scrollX 恒 0），这就是"转 90°"的定义。
+     * 纵向则手动 lerp：把主角固定放在屏幕的 anchor 处（手机上约 50%，
+     * 也就是 HUD 下沿再往下一点），于是下方总是多看得见一截 —— 那是前进方向。
+     * @param {number} [lerp] 省略时用 0.16（每帧收敛）；传 1 = 立刻到位
+     */
+    updateTowerCamera(lerp) {
+      var cam = this.cameras.main, h = this.hero;
+      if (!cam || !h || !this._verticalRoom) return;
+      var H = this.scale.height;
+      // anchor：主角在屏幕上的固定高度。手机 H=360 时 hudSafeTop≈157，
+      // 取 max(安全线下 60, 50%) —— 再往上就钻 HUD，再往下就看不见脚下。
+      var anchor = Math.max(this.hudSafeTop() + 60, Math.round(H * 0.5));
+      anchor = Math.min(anchor, H - 90);
+      var top = 0;
+      var bottom = Math.max(top, this.groundY + 96 - H);
+      var target = clamp(h.y - anchor, top, bottom);
+      var k = (typeof lerp === 'number') ? lerp : 0.16;
+      cam.scrollX = 0;
+      cam.scrollY = (k >= 1) ? target : cam.scrollY + (target - cam.scrollY) * k;
     }
 
     /**
@@ -8637,30 +8784,59 @@
       this.previewMode = !!(node && node.debugRoom);
 
       var W = this.scale.width, H = this.scale.height;
-      this.groundY = H - 96;
-      // 记住「这一关是按什么高度铺的」：onResize 靠它判断画布是否变了尺寸、
-      // 要不要按新高度重建房间（见那里的说明）。
       this._builtH = H;
+      // ===== 3.0 批9：先抽签，再定坐标系 =====
+      // 竖塔和横厅是两套 groundY / levelWidth / 相机边界，必须在地形铺开之前
+      // 就知道"这一间是不是竖塔"。所以抽签提前到这里做一次，结果缓存给 buildTerrain
+      // （那里不能再抽一次 —— 两次随机会抽出不同的骨架）。
+      this._pickedSkeleton = null;
+      this._towerPicked = false;
+      if (!this._forceSkeleton && SKELETON.mode !== 'legacy' && !node.mechanic) {
+        var preParams = this.skeletonParams(node);
+        var preSk = this.pickSkeleton(preParams);
+        this._pickedSkeleton = preSk;
+        if (preSk === 'vertical') this._towerPicked = true;
+      }
+      // ===== 3.0 批5：竖塔 = 把房间转 90°（§2.4）=====
+      var vertical = this.isVerticalRoom(node);
+      this._verticalRoom = vertical;
       // 房间长度：Boss 房间更宽阔；宝箱 / 祭坛房间「拿完就走」，只留一屏出头
-      // （原来的 Math.max(W*2, base) 会把缩短量整个吃掉 —— 这也是之前宝箱房跑半天的原因）
       //
-      // ⚠️ 封顶（用户反馈："后期房间长的根本跑不完，跑好几分钟才能打一两只怪"）
+      // ⚠️ 封顶（用户反馈："后期房间长的根本跑不完"）
       // ------------------------------------------------------------
-      // 原式 `base = 1400 + floor * 140` **没有上限**：层 50 = 8400px、层 100 = 15400px，
-      // 而普通房敌人数在层 10 就封顶到 7 只 → 密度从每 200px 一只崩到每 1000px 以上一只，
-      // 房间里大半是空走廊。**难度应该由敌人强度与数量承担，不该由"多跑两屏"承担。**
+      // 原式 `base = 1400 + floor * 140` **没有上限**：层 50 = 8400px，
+      // 而普通房敌人数在层 10 就封顶到 7 只 → 密度崩到每 1000px 一只。
       // 现在改为随层数温和增长（每层 +90）并在 2200 封顶。
-      var base = Math.min(1400 + this.floor * 90, 2200);
+      var base = Math.min(TOWER.depthBase + this.floor * TOWER.depthStep, TOWER.depthMax);
       var nonCombat = nonCombatRoom(node.type);
       if (node.type === 'boss') base += 380;
       if (nonCombat) base = Math.round(W * 0.95) + 260;
-      this.levelWidth = Math.max(nonCombat ? Math.round(W * 0.85) : W * 2, base);
+      if (vertical) {
+        // 宽度锁一屏 → 相机横向无处可滚（scrollX 恒 0，这是"转 90°"的定义）
+        this.levelWidth = W;
+        // 层数直接复用横厅的房间长度公式，只是搬到 y 轴：第 1 层 7 层、第 15 层 10 层
+        this.roomDepth = Math.min(TOWER.depthBase + this.floor * TOWER.depthStep, TOWER.depthMax);
+        this.towerSteps = Math.max(4, Math.round(this.roomDepth / TOWER.step));
+        // 第 1 层楼板必须落在 **HUD 之下**：手机横屏 hudSafeTop ≈ 157，而 topPad 定值 200
+        // 只留出 43px —— 玩家刚出生时头顶就缩在 HUD 后面（实测截图确认）。
+        // 所以取 max(200, hudSafeTop + 96)：桌面不变，手机上第一层整体下移。
+        this.towerTopPad = Math.max(TOWER.topPad, this.hudSafeTop() + 96);
+        // 井底：第 N 层就是**原来的地面**（掉坑判定 / groundSurfaceAt 全部照旧可用）
+        this.groundY = this.towerTopPad + (this.towerSteps - 1) * TOWER.step;
+      } else {
+        this.roomDepth = 0;
+        this.towerSteps = 0;
+        this.groundY = H - 96;
+        this.levelWidth = Math.max(nonCombat ? Math.round(W * 0.85) : W * 2, base);
+      }
 
       // 相机边界与纵向余量：见 applyCameraBounds 的说明（短屏修「跳上台阶看不见」）
       this.applyCameraBounds();
 
       // ===== P4：机制挂载（与骨架正交）=====
-      var mech = this.pickMechanic(node);
+      // 3.0 批5：竖塔**不挂机制** —— 塌陷 / 守点 / 限时全部是按"横向单层地面"设计的
+      // （塌陷按 x 分段、守点圈在地面、限时时限按跑步距离给），直接搬进竖塔会同时坏两套。
+      var mech = this._verticalRoom ? null : this.pickMechanic(node);
       this._roomMechanic = mech;
       if (mech) {
         node.mechanic = mech;
@@ -8681,14 +8857,28 @@
       // 地形：P0 起走骨架入口（legacy 模式内部直接平厅，行为与 2.8 一致）
       this.buildTerrain(node);
       this._forceSkeleton = null;
+      this._pickedSkeleton = null;
       this._noPlatforms = false;
       this.initRoomObjective(node.type);
       // 机制房（塌陷/守点/限时）自己控制刷怪节奏；调试单房间也可以先不放敌人
+      // 3.0 批5 的"壳"：只验坐标系 —— 先不刷怪、不投放魂晶（批6 改成沿 y 分布）
       if (!node.noEnemies) this.spawnEnemies(node.type);
       this.spawnRoomGoal(node.type);
       this.spawnPortal();
 
-      this.hero.setPosition(140, this.groundY - 80);
+      // 竖塔的进房点 = **房间顶部左侧**（140, 第 1 层楼板之上）；
+      // 横厅仍是"左端地面上方"。这是"转 90°"最直观的一处：出生点跟着坐标系走。
+      // 3.0 批8：机关陷阱（只在竖塔）。放在地形之后、人物就位之前 ——
+      // 陷阱要读 towerDecks 的层号与 y，而人物位置不该被陷阱影响。
+      this.buildTraps();
+      if (this._verticalRoom) {
+        // 竖塔的出生点比横厅**更靠右**：屏幕左侧那一列常驻 HUD（血条 / 属性 / 按钮行 /
+        // 目标敌人面板）在竖塔里正好压住"顶部左侧"—— 实测截图里玩家被目标面板整块挡住。
+        // 取 0.30W 仍保持"左边进、右下出"的对角线意图，但让开了那一列（约 300px 宽）。
+        this.hero.setPosition(Math.max(180, Math.round(W * 0.30)),
+          ((this.towerTopPad != null) ? this.towerTopPad : TOWER.topPad) - 80);
+      }
+      else this.hero.setPosition(140, this.groundY - 80);
       this.hero.setVelocity(0, 0);
       this.hero.setAlpha(1).setAngle(0).setVisible(true);
       this.hero.body.checkCollision.none = false;
@@ -8726,9 +8916,20 @@
         this.shots.forEach(function (a) { if (a) a.destroy(); });
         this.shots = [];
       }
+      // ===== 3.0 批2 · B2：力量药水（进战斗房自动喝一瓶）=====
+      // 非战斗房（商店 / 休整 / 事件 / 宝箱 / 祭坛）不触发 —— 否则进商店就白喝一瓶。
+      // 消耗量通过 bridge.consume('strength') 回写内核，房间结束后瓶数会真的少 1。
+      this._roomStrength = 1;
+      if (!nonCombatRoom(node.type) && (this.hero.strength || 0) > 0 && !this.heroDead) {
+        this.hero.strength -= 1;
+        this._roomStrength = STRENGTH_POTION.mult;
+        callBridge('consume', 'strength', 1);
+        this.showFloat(this.hero.x, this.hero.y - 108,
+          '力量药水 · 攻击 ×' + STRENGTH_POTION.mult, '#ff6b6b', 15);
+        sfx('potion');
+      }
       this.applyRoomStartPassive();
       if (this.chargeRing) this.chargeRing.setVisible(false);
-
       // 相机：横向 0.12 平滑跟随；纵向**同样跟随**（lerpY 也是 0.12），
       // 再叠加 applyCameraFollow 的死区 + 跟随偏移，让他在跟随范围内不缩到 HUD 后面。
       //
@@ -8739,10 +8940,20 @@
       // （渐变 + 抗锯齿边缘）每帧都在不同的采样位置上重采样 ——
       // 那不是"移动更连续"，而是整幅画面在**闪烁/蠕动**，比取整跳步难看得多。
       // 取整跳步最多让移动看起来"一格格"，而半像素采样是**全屏都在抖**。
-      this.cameras.main.startFollow(this.hero, true, 0.12, 0.12);
-      this.applyCameraFollow();
-      // 进房立刻对齐到主角，别把上一房间的镜头偏移带过来
-      this.cameras.main.centerOn(this.hero.x, this.hero.y);
+      // 竖塔：相机**手动**纵向滚（横向恒 0）
+      if (this._verticalRoom) {
+        var cam0 = this.cameras.main;
+        cam0.stopFollow();
+        cam0.setDeadzone(0, 0);
+        cam0.setFollowOffset(0, 0);
+        cam0.scrollX = 0;
+        this.updateTowerCamera(1);   // 进房立刻把这个镜头对好（lerp=1 = 直接到位）
+      } else {
+        this.cameras.main.startFollow(this.hero, true, 0.12, 0.12);
+        this.applyCameraFollow();
+        // 进房立刻对齐到主角，别把上一房间的镜头偏移带过来
+        this.cameras.main.centerOn(this.hero.x, this.hero.y);
+      }
       this.refreshHud();
       // 机制房：地形 / 门都已就位，最后挂机制（它会接管目标、钥匙、刷怪与门锁）
       this.startMechanic(node);
@@ -8837,6 +9048,18 @@
       this._platformPass = false;
       this.roomObjective = null;
       this.roomSkeleton = null;
+      // 3.0 批5：竖塔的坐标系状态必须跟着房间一起清（否则下一间平厅会沿用地窖的 groundY）
+      this._verticalRoom = false;
+      this.towerTopPad = 0;
+      this.roomDepth = 0;
+      this.towerSteps = 0;
+      this.towerDecks = [];
+      this._dropUntil = 0;
+      this._dropHeldPrev = false;
+      this._pickedSkeleton = null;
+      this._towerPicked = false;
+      this.heroStunUntil = 0;
+      this.clearTraps();
       this._terrainParams = null;
       this._flatLayout = null;
       this.deckY = null;
@@ -8951,10 +9174,15 @@
     pickSkeleton(params) {
       if (params.nonCombat || params.roomType === 'boss' || params.roomType === 'start' || params.floor <= 1) return 'flat';
       var table = this.skeletonWeightTable(params.floor);
+      // 3.0 批9：竖塔只做**普通战斗房**，且受回退开关控制。
+      // 这个判断必须和 isVerticalRoom() 一字不差 —— 否则会出现
+      // "抽到了竖塔、坐标系却没转"的半成品房间（楼板铺在横厅的 groundY 上）。
+      var allowVertical = (params.roomType === 'enemy') && SKELETON.vertical !== 'off';
       var pool = [];
       var total = 0;
       for (var i = 0; i < SKELETON.enabled.length; i++) {
         var k = SKELETON.enabled[i];
+        if (k === 'vertical' && !allowVertical) continue;
         var w = table[k] || 0;
         if (w > 0) { pool.push({ key: k, w: w }); total += w; }
       }
@@ -8983,8 +9211,11 @@
       if (floor <= 1) return { flat: 100 };
       if (floor === 2) return { flat: 75, double: 25 };
       if (floor <= 5) return { flat: 70, double: 15, bridge: 15 };
-      if (floor <= 15) return { flat: 50, double: 30, bridge: 20 };
-      return { flat: 40, double: 35, bridge: 25 };
+      // 3.0 批9：**第 6 层起**才出现竖塔（§3 批9 的验收）。
+      // 为什么不是更早：竖塔要玩家先接受三件新东西（一屏宽 / 按 ↓ 逐层 / 能往上爬），
+      // 前 5 层已经在教"上层"与"脚下有坑"，再叠一层会互相遮蔽。
+      if (floor <= 15) return { flat: 45, double: 28, bridge: 19, vertical: 8 };
+      return { flat: 35, double: 30, bridge: 20, vertical: 15 };
     }
 
     /**
@@ -8992,6 +9223,12 @@
      * @returns {string} 实际落成的骨架（double/bridge 放不下时会退回 flat）
      */
     applySkeleton(sk, params) {
+      if (sk === 'vertical') {
+        if (this.buildVerticalSkeleton(params)) return 'vertical';
+        console.warn('[战斗2D] 竖塔骨架生成失败，退回平厅');
+        this.buildFlatSkeleton(params);
+        return 'flat';
+      }
       if (sk === 'double') {
         if (this.buildDoubleSkeleton(params)) return 'double';
         console.warn('[战斗2D] 双层骨架在当前视口放不下，退回平厅');
@@ -9006,6 +9243,539 @@
       }
       this.buildFlatSkeleton(params);
       return 'flat';
+    }
+
+    /**
+     * 是不是竖塔（3.0 · §2.4「把房间转 90°」）
+     * ------------------------------------------------------------
+     * 批5 只认强制开关（`_forceSkeleton === 'vertical'` / 调试入口）；
+     * 批9 会接进 pickSkeleton 的抽签表，那时这里再加 "抽签结果" 的分支。
+     */
+    isVerticalRoom(node) {
+      // 竖塔只做**普通战斗房**：商店 / 祭坛那种"拿完就走"的房间做成 7 层深没有意义；
+      // 层主房要用的是一屏宽的大平厅；镜像房照抄玩家站位、精英房要 3 只同场。
+      var type = (node && node.type) || 'enemy';
+      if (nonCombatRoom(type) || type === 'boss' || type === 'start' ||
+          type === 'mirror' || type === 'elite') return false;
+      // 带机制的房一律不做竖塔：塌陷按 x 分段、守点圈在地面、限时按跑步距离给时间，
+      // 三套机制全部基于"横向单层地面"。抽到竖塔就等于让这间房失去机制
+      // （实测：调试指定 mechanic:'collapse' 的房有 8% 概率抽成竖塔 → 塌陷房打不开门）。
+      if (node && node.mechanic) return false;
+      // 强制开关（调试 / 验收）：_forceSkeleton = 'vertical'
+      if (this._forceSkeleton === 'vertical') return true;
+      // 批9：抽签结果 —— buildTerrain 里 pickSkeleton 抽到 'vertical' 时，
+      // 会把结果提前写进 _towerPicked，于是这里和骨架实现走同一个决定。
+      return this._towerPicked === true;
+    }
+
+    /**
+     * 竖塔骨架（3.0 批5 · §2.5 参数表）
+     * ------------------------------------------------------------
+     *   房间宽  = W（一屏，横向完全不滚）
+     *   房间深  = roomDepth（1500~2200，直接复用横厅的长度公式）
+     *   层距    = 220px，每层一条**完整楼板**（0 ~ W，不设缺口）
+     *   楼板    = **必须可穿**（走 spawnPlatformAt 的单向薄板，不设 `_solidDeck`）
+     *   井底    = 原来的 groundY 一行地面（掉坑判定 / groundSurfaceAt 照旧可用）
+     *   墙体    = 左右两面，从顶部到井底，实心
+     *   出口    = 底部右端（复用 spawnPortal，零改动）
+     *
+     * 为什么楼板必须走 `spawnPlatformAt` 而不是 `layoutFloor`：地面碰撞体是
+     * **按 x 索引的一行**（一个 x 只有一个格子），天生不能上下重叠；竖塔每层的
+     * 楼板是"同一个 x 上有很多个 y"，只能走另一套碰撞池（platformTiles）。
+     * @returns {boolean} 是否建成
+     */
+    buildVerticalSkeleton(params) {
+      var W = this.levelWidth, steps = this.towerSteps;
+      if (!W || !steps || steps < 3) return false;
+      // 井底：仍是原来的一行地面
+      this.layoutFloor();
+
+      // 每 220px 一层整条楼板。第 1 层是玩家出生站的那层（顶部留 TOP_PAD），
+      // 第 steps 层就是井底本身（它由 layoutFloor 铺好，不再铺楼板）。
+      this.towerDecks = [];
+      var topPad = (this.towerTopPad != null) ? this.towerTopPad : TOWER.topPad;
+      for (var k = 1; k <= steps - 1; k++) {
+        var y = topPad + (k - 1) * TOWER.step;
+        if (y >= this.groundY - 20) break;
+        this.spawnTowerDeck(y, k);
+        this.towerDecks.push({ level: k, y: y });
+      }
+      this.buildTowerWalls();
+      this.paintTowerDepth();
+      return true;
+    }
+
+    /**
+     * 一层楼板：整条（0 ~ W）+ 层号刻痕
+     * 走 spawnPlatformAt → 单向薄板（能上穿、能踩住、能按 ↓ 穿下去）。
+     * ⚠️ **不要**设 `_solidDeck`：setPlatformPassThrough 会跳过带它的格子，
+     *    竖塔的楼板必须可穿，否则"按 ↓ 下一层"就整个不成立。
+     */
+    spawnTowerDeck(y, levelNo) {
+      var len = Math.max(1, Math.round(this.levelWidth / 64));
+      this.spawnPlatformAt(0, y, len);
+      // 这层楼板标记：回归 / 陷阱 / 敌人沿 y 分布都要认它
+      for (var i = 0; i < this.platformTiles.length; i++) {
+        var t = this.platformTiles[i];
+        if (t && t.body && Math.abs(t.y - y) < 4) t._towerDeck = levelNo;
+      }
+      this.paintTowerDeckMark(y, levelNo);
+    }
+
+    /**
+     * 层号刻痕（§2.5「怎么让玩家知道自己在第几层」）
+     * ------------------------------------------------------------
+     * 作者已定：**不加 HUD 层数**，靠视觉判断。但如果每层楼板长得一模一样，
+     * 视觉判断就是不可能的 —— 所以必须给楼层一个环境标记。
+     * 这里在右侧墙边竖排小横线：**第 N 层画 N 道**（像电梯楼层显示），
+     * 玩家扫一眼就知道"我在第 6 层"，而且不需要看别处 —— 它就在脚下的楼板上。
+     * 代价只是一次 Graphics 绘制，不加任何 UI、不占 HUD。
+     */
+    paintTowerDeckMark(y, levelNo) {
+      var g = this.add.graphics().setDepth(3.4);
+      var n = Math.min(levelNo, 10);
+      var x = this.levelWidth - 40;
+      var gap = 2.8, top = y - 24;
+      g.fillStyle(0x9fb2d8, 0.66);
+      for (var i = 0; i < n; i++) g.fillRect(x, top + i * gap, 18, 2);
+      this.skeletonParts.push(g);
+    }
+
+    /** 左右两面真墙（横厅的"墙"是隐形边界，竖塔的墙是新东西） */
+    buildTowerWalls() {
+      var H = this.groundY + 96, w = TOWER.wallPx, self = this;
+      [{ x: w / 2 }, { x: this.levelWidth - w / 2 }].forEach(function (p) {
+        var t = self.solids.create(p.x, H / 2, TEX.ground);
+        t.setDisplaySize(w, H);
+        t.setVisible(false);
+        if (t.body) t.refreshBody();
+        // _solidDeck 在这里只用来让 setPlatformPassThrough 跳过它（墙不可穿）
+        t._solidDeck = true;
+        t._towerWall = true;
+        self.platformTiles.push(t);
+        // 视觉：一道竖着的石壁（比地板暗、带 1px 描边，与既有"有厚度"的语言一致）
+        var strip = self.add.rectangle(p.x, H / 2, w, H, 0x141a2e, 1)
+          .setDepth(3.1).setStrokeStyle(1, 0x3a4466, 0.55);
+        self.platformStrips.push(strip);
+      });
+    }
+
+    /**
+     * 深度渐变（§2.5「墙面随深度变暗：越往下越暗，井底最黑」）
+     * 给"往下走"的氛围；层号刻痕给精确读数 —— 两者都只用 Graphics，不加 UI。
+     */
+    paintTowerDepth() {
+      var H = this.groundY + 96, bands = 24;
+      var g = this.add.graphics().setDepth(0.6);
+      for (var i = 0; i < bands; i++) {
+        g.fillStyle(0x02030a, (i / bands) * 0.42);
+        g.fillRect(0, (H / bands) * i, this.levelWidth, H / bands + 1);
+      }
+      this.skeletonParts.push(g);
+    }
+
+    /* ============================================================
+       3.0 批8 · 机关陷阱（只在竖塔里）
+       ------------------------------------------------------------
+       落在**楼板上的一个 x 区段**（不分块，判定只看横向范围）：
+       楼板是整条 0~W，所以陷阱不能"占一块砖"，只能"占一段 x"。
+       井底层永远不放 —— 那是"被追下来的怪汇合、决战"的地方。
+       每层最多两个，而且批8 只有穿刺 + 坠物两种，它们的配合是**有解**的
+       （§2.8 搭配表：穿刺 + 坠物 = 横向走开，两个都是纵向的）。
+       ============================================================ */
+    buildTraps() {
+      this.clearTraps();          // 防御：上一层残留的视觉
+      if (!this._verticalRoom) return;
+      var decks = this.towerDecks || [];
+      var self = this;
+      var kinds = this.trapKindPool();
+      if (!kinds.length) return;
+      decks.forEach(function (d) {
+        // 第 1 掷：有没有陷阱（40% 无 / 60% 有）
+        if (Math.random() >= TRAP.chance) return;
+        // 第 2 掷：一个还是两个（80% 单 / 20% 双）
+        var count = (Math.random() < TRAP.doubleChance) ? 2 : 1;
+        var picked = [];
+        for (var i = 0; i < count; i++) {
+          var pool = kinds.filter(function (k) { return picked.indexOf(k) < 0; });
+          if (!pool.length) break;
+          var k = self.pickTrapKind(pool, picked);
+          if (!k) break;
+          picked.push(k);
+        }
+        picked.forEach(function (k) { self.spawnTrap(k, d); });
+      });
+    }
+
+    /** 当前可用的陷阱种类（3.0 批9：五种全上） */
+    trapKindPool() {
+      return Object.keys(TRAP.kinds);
+    }
+
+    /**
+     * 双陷阱必须"有解"（§2.8 的允许表）
+     * 允许：穿刺+坠物（横向走开）· 穿刺+暗箭（跳）· 落板+穿刺（走+跳）
+     *       坠物+暗箭（斜向跑）· 落板+坠物（按 ↓ 走）· 夹击门+暗箭（跳上沿）
+     * 禁止：**夹击门+坠物**（上下同时封死）· **夹击门+穿刺**（上下夹 + 脚下刺）
+     * 无解组合不是"更难"，是"送死" —— 它把玩家的所有应对同时关掉。
+     */
+    trapPairOk(a, b) {
+      var banned = [['press', 'fall'], ['press', 'spike']];
+      for (var i = 0; i < banned.length; i++) {
+        if ((a === banned[i][0] && b === banned[i][1]) ||
+            (a === banned[i][1] && b === banned[i][0])) return false;
+      }
+      return true;
+    }
+
+    /** 按权重抽一种陷阱（会避开与已选陷阱"无解"的组合） */
+    pickTrapKind(pool, already) {
+      var picked = (already || []).slice();
+      var ok = pool.filter(function (k) {
+        for (var i = 0; i < picked.length; i++) {
+          if (!this.trapPairOk(k, picked[i])) return false;
+        }
+        return true;
+      }, this);
+      var use = ok.length ? ok : pool;
+      var total = 0, i;
+      for (i = 0; i < use.length; i++) total += (TRAP.kinds[use[i]].weight || 1);
+      if (total <= 0) return use[0] || null;
+      var r = Math.random() * total;
+      for (i = 0; i < use.length; i++) {
+        r -= (TRAP.kinds[use[i]].weight || 1);
+        if (r <= 0) return use[i];
+      }
+      return use[use.length - 1];
+    }
+
+    /**
+     * 投放一个陷阱
+     * x 刻意避开左右两端（出生点 / 出口 / 层号刻痕），但**每层随机**——
+     * 不能背板（玩家的第二条预测模型要打破："陷阱在固定位置"）。
+     */
+    spawnTrap(kind, deck) {
+      var def = TRAP.kinds[kind];
+      if (!def || !deck) return null;
+      var w = def.w || 48;
+      var x = Math.round(rnd(w / 2 + 96, this.levelWidth - w / 2 - 72));
+      var t = {
+        kind: kind, x: x, w: w, level: deck.level, y: deck.y,
+        state: 'idle', stayMs: 0, warnAt: 0, coolUntil: 0,
+        spent: false, gfx: null, fx: null
+      };
+      t.gfx = this.paintTrap(kind, t);
+      this.traps.push(t);
+      return t;
+    }
+
+    /** 清掉本房间的陷阱（视觉 + 状态） */
+    clearTraps() {
+      (this.traps || []).forEach(function (t) {
+        if (!t) return;
+        if (t.gfx) { try { t.gfx.destroy(); } catch (e) { /* 忽略 */ } t.gfx = null; }
+        if (t.fx) { try { t.fx.destroy(); } catch (e) { /* 忽略 */ } t.fx = null; }
+        if (t.fx2) { try { t.fx2.destroy(); } catch (e) { /* 忽略 */ } t.fx2 = null; }
+      });
+      this.traps = [];
+    }
+
+    /**
+     * 陷阱的**静态**视觉（程序化，不出位图）
+     * 语言：陷阱是"地形的一部分"，所以不用面板圆角，但守住同一支笔 ——
+     * 1px 描边、顶部内高光、局部辉光的习惯仍在（见 DESIGN.md 的「竖塔与陷阱」）。
+     */
+    paintTrap(kind, t) {
+      var g = this.add.graphics().setDepth(3.2);
+      if (kind === 'spike') {
+        // 楼板上的一个暗孔（14×5px）：常态几乎看不见，预警时才亮起来
+        g.fillStyle(0x04060f, 0.85);
+        g.fillEllipse(t.x, t.y - 10, 14, 5);
+        g.fillStyle(0x000000, 0.9);
+        g.fillEllipse(t.x, t.y - 10, 7, 2.5);
+      } else if (kind === 'plate') {
+        // 落板：楼板上一段裂纹（视觉预警，看得见 —— 它要"惩罚犹豫"）
+        var half = t.w / 2;
+        g.lineStyle(1, 0x04060f, 0.75);
+        for (var i = -2; i <= 2; i++) {
+          var cx = t.x + i * (half / 3);
+          g.beginPath();
+          g.moveTo(cx, t.y - 12);
+          g.lineTo(cx + 4, t.y - 4);
+          g.lineTo(cx - 3, t.y + 2);
+          g.strokePath();
+        }
+      } else if (kind === 'press') {
+        // 夹击门：上下两块"要合拢的石唇"（常态几乎贴着天花板与地面）
+        var w2 = t.w / 2;
+        g.fillStyle(0x2a3150, 0.85);
+        g.fillRect(t.x - w2, t.y - TOWER.step + 8, t.w, 10);
+        g.fillRect(t.x - w2, t.y - 18, t.w, 10);
+        g.lineStyle(1, 0x3a4466, 0.55);
+        g.strokeRect(t.x - w2 + 0.5, t.y - TOWER.step + 8.5, t.w - 1, 9);
+        g.strokeRect(t.x - w2 + 0.5, t.y - 17.5, t.w - 1, 9);
+      } else if (kind === 'arrow') {
+        // 暗箭：墙上的一个小孔（左右两侧各一个，实际从哪边射在预警时决定）
+        g.fillStyle(0x04060f, 0.9);
+        g.fillCircle(t.side === -1 ? 14 : this.levelWidth - 14, t.y - 34, 4);
+        g.fillStyle(0x90a2c8, 0.35);
+        g.fillCircle(t.side === -1 ? 14 : this.levelWidth - 14, t.y - 34, 1.6);
+      }
+      return g;
+    }
+
+    /** 预警表现（§2.8 每种陷阱的"怎么学"） */
+    paintTrapWarn(t) {
+      var def = TRAP.kinds[t.kind];
+      var now = this.time.now;
+      if (t.kind === 'spike') {
+        if (t.gfx) {
+          t.gfx.clear();
+          t.gfx.fillStyle(0x04060f, 0.95);
+          t.gfx.fillEllipse(t.x, t.y - 10, 20, 7);
+          t.gfx.fillStyle(0xffd76a, 0.55);
+          t.gfx.fillEllipse(t.x, t.y - 10, 12, 4);
+          t.gfx.fillStyle(0xffffff, 0.5);
+          t.gfx.fillEllipse(t.x - 2, t.y - 11, 4, 1.5);
+        }
+        sfx('trap');
+      } else if (t.kind === 'fall') {
+        // 坠物：**只有声音**，一点视觉都不给（§2.8 ②）：玩家看不到上层，只能靠听
+        sfx('collapseWarn');
+      } else if (t.kind === 'plate') {
+        // 落板：裂纹扩散 + 楼板轻微抖动（视觉）
+        if (t.gfx) {
+          t.gfx.clear();
+          var half = t.w / 2;
+          t.gfx.lineStyle(2, 0xffd76a, 0.35);
+          for (var i = -2; i <= 2; i++) {
+            var cx = t.x + i * (half / 3);
+            t.gfx.beginPath();
+            t.gfx.moveTo(cx - 1, t.y - 14);
+            t.gfx.lineTo(cx + 6, t.y - 3);
+            t.gfx.lineTo(cx - 5, t.y + 3);
+            t.gfx.strokePath();
+          }
+        }
+        sfx('collapseWarn');
+      } else if (t.kind === 'press') {
+        // 夹击门：上下两块石唇同时抖动（视觉 + 摩擦声）
+        if (t.gfx) {
+          t.gfx.clear();
+          var w2 = t.w / 2;
+          t.gfx.fillStyle(0x3a4466, 0.95);
+          t.gfx.fillRect(t.x - w2, t.y - TOWER.step + 8, t.w, 12);
+          t.gfx.fillRect(t.x - w2, t.y - 20, t.w, 12);
+          t.gfx.fillStyle(0xffd76a, 0.35);
+          t.gfx.fillRect(t.x - w2, t.y - TOWER.step + 18, t.w, 2);
+          t.gfx.fillRect(t.x - w2, t.y - 10, t.w, 2);
+        }
+        sfx('trap');
+      } else if (t.kind === 'arrow') {
+        // 暗箭：墙上的孔亮起 + 上膛声；同时随机决定从哪一侧射（不背板）
+        if (t.side == null) t.side = Math.random() < 0.5 ? -1 : 1;
+        if (t.gfx) {
+          t.gfx.clear();
+          var mx = t.side === -1 ? 14 : this.levelWidth - 14;
+          t.gfx.fillStyle(0xffd76a, 0.55);
+          t.gfx.fillCircle(mx, t.y - 34, 6);
+          t.gfx.fillStyle(0xffffff, 0.5);
+          t.gfx.fillCircle(mx, t.y - 34, 2.4);
+        }
+        sfx('spearwind');
+      }
+      t.state = 'warn';
+      t.warnAt = now;
+      if (def) t.fireAt = now + def.warn;
+    }
+
+    /** 陷阱触发：伤害结算 + 视觉 */
+    fireTrap(t) {
+      var def = TRAP.kinds[t.kind];
+      var self = this;
+      t.state = 'cool';
+      t.coolUntil = this.time.now + TRAP.cooldown;
+      if (def && def.once) t.spent = true;
+      // 暗箭没有"站进区段"这一步：它的命中完全由**飞行路径 × 玩家 bounds** 决定。
+      // 这正是"跳起来能躲"的唯一来源 —— 开始时不能预设命中，否则跳了也照打。
+      var hits = (t.kind === 'arrow') ? false : this.trapTouchesHero(t);
+      var dmg = Math.max(0, Math.round((this.hero.attack || 6) * (def ? def.dmgPct : 0.5)));
+
+      if (t.kind === 'spike') {
+        var g = this.add.graphics().setDepth(3.9);
+        var cy = t.y - 10;
+        for (var i = -1; i <= 1; i++) {
+          var sx = t.x + i * 13;
+          g.fillStyle(0x9aa8c8, 1);
+          g.fillTriangle(sx - 5, cy, sx + 5, cy, sx, cy - 34);
+          g.fillStyle(0xffffff, 0.55);
+          g.fillTriangle(sx - 2, cy - 2, sx + 1, cy - 2, sx, cy - 26);
+        }
+        g.y = 26; g.setAlpha(0);
+        this.tweens.add({ targets: g, y: 0, alpha: 1, duration: 90, ease: 'Back.easeOut' });
+        this.tweens.add({ targets: g, alpha: 0, delay: 260, duration: 140, onComplete: function () { g.destroy(); } });
+        sfx('spear');
+        if (hits) this.damageHero(dmg, null, false, t.x);
+        this.afterTrapHit(t, def, hits, '穿刺');
+
+      } else if (t.kind === 'fall') {
+        // 从上一层楼板砸下来（预警段是纯听觉，视觉只在落下时出现）
+        var top = t.y - TOWER.step;
+        var rock = this.add.image(t.x, top - 10, TEX.platform).setDisplaySize(34, 26).setDepth(9);
+        rock.setTint(0x8a8fa8);
+        sfx('collapseFall');
+        this.tweens.add({
+          targets: rock, y: t.y - 24, duration: Math.max(90, (def ? def.warn : 350) * 0.9), ease: 'Quad.easeIn',
+          onComplete: function () {
+            self.spark(t.x, t.y - 12, 0xb8c8d8);
+            self.cameras.main.shake(90, 0.004);
+            if (hits) self.damageHero(dmg, null, false, t.x);
+            self.afterTrapHit(t, def, hits, '坠物');
+            rock.destroy();
+          }
+        });
+
+      } else if (t.kind === 'plate') {
+        // 落板：**不伤害**，直接把人掉到下一层。
+        // 它惩罚的不是血量，是"犹豫" —— 玩家在层 5 想"打不打这只怪"，
+        // 犹豫 3 秒楼板塌了，这个决定被外力做掉了。
+        var shards = this.add.graphics().setDepth(3.6);
+        shards.fillStyle(0x5a4a3a, 1);
+        for (var k2 = -2; k2 <= 2; k2++) {
+          shards.fillRect(t.x + k2 * (t.w / 5) - 6, t.y - 8, 12, 5);
+        }
+        this.tweens.add({ targets: shards, y: 120, alpha: 0, duration: 520, onComplete: function () { shards.destroy(); } });
+        sfx('collapseFall');
+        this.cameras.main.shake(120, 0.005);
+        if (hits) this.dropHeroThrough(200);
+        this.showFloat(t.x, t.y - 30, hits ? '塌了!' : '躲开了', hits ? '#ff8a7a' : '#73f0b4', 14);
+
+      } else if (t.kind === 'press') {
+        // 夹击门：上下两块石唇合拢（中间留 60px 缝，玩家 64px 挤不过去）
+        var pw = t.w / 2;
+        var up = this.add.rectangle(t.x, t.y - TOWER.step + 30, t.w, 40, 0x3a4466, 1).setDepth(3.8);
+        var dn = this.add.rectangle(t.x, t.y - 30, t.w, 40, 0x3a4466, 1).setDepth(3.8);
+        this.tweens.add({ targets: up, y: t.y - TOWER.step + 130, duration: 110, ease: 'Back.easeOut' });
+        this.tweens.add({ targets: dn, y: t.y - 130, duration: 110, ease: 'Back.easeOut' });
+        this.tweens.add({
+          targets: [up, dn], alpha: 0, delay: 380, duration: 160,
+          onComplete: function () { up.destroy(); dn.destroy(); }
+        });
+        sfx('spear');
+        this.cameras.main.shake(140, 0.006);
+        if (hits) {
+          this.damageHero(dmg, null, false, t.x);
+          // 硬直 0.6s（§2.8：伤害 100% + 硬直）—— 它惩罚"贪刀"
+          if (def && def.stun) {
+            this.heroStunUntil = this.time.now + def.stun;
+            this.showFloat(this.hero.x, this.hero.y - 104, '硬直', '#ffd76a', 13);
+            this.isCharging = false;
+            if (this.chargeRing) this.chargeRing.setVisible(false);
+          }
+        }
+        this.afterTrapHit(t, def, hits, '夹击');
+
+      } else if (t.kind === 'arrow') {
+        // 暗箭：从侧墙水平射向对面（贴楼板上方 34px 飞过）
+        var dir = (t.side === -1) ? 1 : -1;
+        var ax = (t.side === -1) ? 18 : this.levelWidth - 18;
+        var ay = t.y - 34;
+        var arrow = this.add.rectangle(ax, ay, 34, 4, 0xd8c8a0, 1).setDepth(9);
+        this.tweens.add({
+          targets: arrow, x: (t.side === -1) ? this.levelWidth - 18 : 18,
+          duration: 420, ease: 'Linear',
+          onUpdate: function () {
+            // 命中判定跟着箭走（跳起来 = 躲开，这是"跳"这条解法的唯一来源）
+            if (!hits && !self.heroDead &&
+              Phaser.Geom.Intersects.RectangleToRectangle(arrow.getBounds(), self.hero.getBounds())) {
+              hits = true;
+              self.damageHero(dmg, null, false, arrow.x);
+              self.afterTrapHit(t, def, true, '暗箭');
+              self.spark(arrow.x, arrow.y, 0xffe0a0);
+            }
+          },
+          onComplete: function () { arrow.destroy(); }
+        });
+        sfx('spear');
+        // 命中判定只在 onUpdate 里做：箭不在玩家的高度带上 = "跳起来了"，自然躲开
+      }
+    }
+
+    /** 陷阱命中后的收尾（飘字 / 击退 / 清掉静态孔） */
+    afterTrapHit(t, def, hits, name) {
+      var h = this.hero;
+      if (!h) return;
+      if (hits) {
+        this.showFloat(h.x, h.y - 96, name + '!', '#ff8a7a', 16);
+        if (def && def.knock) {
+          var dir = h.x >= t.x ? 1 : -1;
+          h.setVelocityX(dir * def.knock * 3);
+        }
+      } else {
+        this.showFloat(t.x, t.y - 40, '躲开', '#73f0b4', 13);
+      }
+      // 用完把静态视觉恢复成常态
+      if (t.gfx) {
+        var tmp = this.paintTrap(t.kind, t);
+        t.gfx.destroy();
+        t.gfx = tmp;
+      }
+    }
+
+    /** 把英雄往下送一层（落板 / 玩家按 ↓ 共用；初速可调） */
+    dropHeroThrough(vy) {
+      this.setPlatformPassThrough(true);
+      this.hero.setVelocityY(typeof vy === 'number' ? vy : TOWER.dropVy);
+      this._dropUntil = this.time.now + TOWER.dropMs;
+    }
+
+    /** 玩家是不是正踩在这个陷阱的 x 区段里（同层才算） */
+    trapTouchesHero(t) {
+      var h = this.hero;
+      if (!h || this.heroDead) return false;
+      if (Math.abs(h.y - t.y) > 74) return false;      // 不在这一层
+      if (!t.w) return true;
+      return h.x >= t.x - t.w / 2 && h.x <= t.x + t.w / 2;
+    }
+
+    /** 玩家是不是**在这一层**（暗箭用：它不按 x 区段触发，而是按层） */
+    trapOnSameLayer(t) {
+      var h = this.hero;
+      if (!h || this.heroDead) return false;
+      return Math.abs(h.y - t.y) <= 74;
+    }
+
+    /** 每帧：陷阱状态机（idle → warn → fire → cool） */
+    updateTraps(dt, now) {
+      if (!this._verticalRoom || !this.traps || !this.traps.length) return;
+      var self = this;
+      this.traps.forEach(function (t) {
+        if (!t) return;
+        var def = TRAP.kinds[t.kind];
+        if (!def) return;
+        if (t.state === 'cool') {
+          if (now >= t.coolUntil) { t.state = 'idle'; t.stayMs = 0; }
+          return;
+        }
+        if (t.state === 'warn') {
+          if (now >= t.fireAt) self.fireTrap(t);
+          return;
+        }
+        // idle
+        if (def.once && t.spent) return;
+        var inside = (t.kind === 'arrow') ? self.trapOnSameLayer(t) : self.trapTouchesHero(t);
+        if (!inside) {
+          // 落板是"累计停留"：离开会缓慢回落（§2.8 ③）
+          if (def.decay && t.stayMs > 0) t.stayMs = Math.max(0, t.stayMs - dt * def.decay);
+          return;
+        }
+        var need = def.stay || 0;
+        if (need > 0) {
+          t.stayMs += dt;
+          if (t.stayMs < need) return;
+        }
+        self.paintTrapWarn(t);
+      });
     }
 
     /**
@@ -9482,7 +10252,8 @@
     buildTerrain(node) {
       var params = this.skeletonParams(node);
       params.noPlatforms = !!this._noPlatforms;
-      var sk = this._forceSkeleton || ((SKELETON.mode === 'legacy') ? 'flat' : this.pickSkeleton(params));
+      var sk = this._forceSkeleton || this._pickedSkeleton ||
+        ((SKELETON.mode === 'legacy') ? 'flat' : this.pickSkeleton(params));
       // 回退开关：塌陷房抽到双层 / 断桥时，若对应开关关掉就退回平厅（方案 §11）
       if (!this._forceSkeleton && this._roomMechanic === 'collapse') {
         if (sk === 'double' && !MECHANIC.collapseOnDouble) sk = 'flat';
@@ -9551,8 +10322,39 @@
     }
 
     /**
+     * 玩家 ↔ 地形：要不要碰撞（3.0 批7）
+     * ------------------------------------------------------------
+     * 返回 false = 这一帧放行（穿过去）。
+     *  **只放行薄板**（塔内楼板 / 浮台）：墙与实体楼板永远挡 —— 边界是边界。
+     * 竖塔的"按 ↓ 下一层"走这一层过滤，**不去改平台 body**：
+     * 那个 body 是所有实体共用的，关了它同层敌人会跟着掉下去。
+     * 横厅的加速下坠仍走 `setPlatformPassThrough`（tile 级、既有行为，回归在验它）。
+     */
+    heroTileFilter(spr, tile) {
+      if (!tile) return true;
+      if (tile._solidDeck) return true;
+      if (this._dropUntil && this.time.now <= this._dropUntil) return false;
+      if (this._platformPass) return false;
+      return true;
+    }
+
+    /**
+     * 敌人 ↔ 地形：要不要碰撞（3.0 批7 · §2.6）
+     * 只有"这只怪自己在穿层窗口里"才放行 —— 旁边那几只照旧站着。
+     * 飞行怪根本不走这条（`checkCollision.none = true`），墙与井底照旧挡它。
+     */
+    enemyTileFilter(spr, tile) {
+      if (!spr || !tile) return true;
+      if (tile._solidDeck) return true;
+      if (spr._deckPassUntil && this.time.now < spr._deckPassUntil) return false;
+      return true;
+    }
+
+    /**
      * 加速下坠期间临时关掉「单向平台的上表面」
      * 松键 / 落地立刻恢复；进房时新平台的 up 面默认是开的。
+     * ⚠️ 3.0 批7 之后它只负责**横厅的加速下坠**：竖塔里禁掉空中连穿（§2.5），
+     *    玩家的「按 ↓ 下一层」改走 heroTileFilter（单方级别，不影响敌人）。
      */
     setPlatformPassThrough(on) {
       on = !!on;
@@ -9560,9 +10362,42 @@
       this._platformPass = on;
       for (var i = 0; i < this.platformTiles.length; i++) {
         var t = this.platformTiles[i];
-        if (!t || !t.body || t._solidDeck) continue;   // 双层骨架的实体上层：不可穿
+        if (!t || !t.body || t._solidDeck) continue;   // 双层骨架的实体上层 / 竖塔的墙：不可穿
         t.body.checkCollision.up = !on;
       }
+    }
+
+    /**
+     * 脚下踩的是不是**可穿的薄板**（3.0 批5）
+     * 只有站在它上面时按 ↓ 才有意义；站在井底地面上按 ↓ 什么都不该发生。
+     */
+    standingOnThin() {
+      var h = this.hero;
+      if (!h || !h.body) return false;
+      if (!(h.body.blocked.down || h.body.touching.down)) return false;
+      var footY = h.y;                      // origin(0.5, 1) → hero.y 就是脚底
+      for (var i = 0; i < this.platformTiles.length; i++) {
+        var t = this.platformTiles[i];
+        if (!t || !t.body || t._solidDeck) continue;
+        var top = t.body.top;
+        if (Math.abs(top - footY) <= 6 && h.x >= t.body.left - 8 && h.x <= t.body.right + 8) return true;
+      }
+      return false;
+    }
+
+    /**
+     * 开始穿一层（3.0 批5 · §2.5）
+     * ------------------------------------------------------------
+     * 关掉单向平台的上表面 + 给一个向下的初速让脚离开楼板，
+     * 220ms 后**强制**恢复碰撞。为什么是 220ms：楼板视觉厚 28px，
+     * 按 120 初速 + 1700 重力算，220ms 内下落约 67px —— 刚好穿过楼板，
+     * 但远不到下一层（220px 下方），所以"穿一层就停"。
+     * **这条不是手感参数，是设计红线**：允许一路穿到底，
+     * 10 层楼板就退化成装饰，玩家 5 秒到井底，每层"要不要停"的决定全部消失。
+     */
+    startDropThrough() {
+      this.dropHeroThrough(TOWER.dropVy);
+      sfx('jump');
     }
 
     /**
@@ -9574,6 +10409,9 @@
      * 颜色：三色共用显示对象，按权重抽（蓝 70 / 深渊 20 / 腐化 10）。
      */
     populateRoomCrystals(wantOverride) {
+      // 3.0 批6：竖塔的魂晶**沿 y 分布**（横向摆位在竖塔里意义不大 ——
+      // 选择"哪一层去拿"才是这道题）
+      if (this._verticalRoom) return this.populateTowerCrystals(wantOverride);
       var perches = (this.platformPerches || []).slice();
       if (!perches.length) return;
       // y 越大越低 —— 先按"低 → 高"排
@@ -9603,6 +10441,41 @@
         self.spawnCrystal(p.x, p.y - 26, kind);
         p.crystal = true;
       });
+    }
+
+    /**
+     * 竖塔的魂晶投放（3.0 批6 · §2.9 第 7 项）
+     * ------------------------------------------------------------
+     * 横厅是"最低一段平台保底 1 颗 + 30% 再给 1 颗"；竖塔里"最低的那层"就是井底旁边，
+     * 而玩家一路往下，魂晶放在他必然经过的地方等于白给。
+     * 所以改成：**在楼板层里随机挑**，第一颗优先靠中途（第 3~5 层），
+     * 第二颗优先更深（拿它的代价是继续往下、离出口更近）。
+     * 位置一律落在楼板顶面上（不悬空、要站住读条），x 走两侧 —— 中间留给战斗。
+     */
+    populateTowerCrystals(wantOverride) {
+      var decks = (this.towerDecks || []).slice();
+      if (!decks.length) return;
+      var want = (wantOverride != null) ? wantOverride
+        : (1 + (Math.random() < CRYSTAL.extraChance ? 1 : 0));
+      want = Math.max(1, Math.min(want, CRYSTAL.maxPerRoom, decks.length));
+      var self = this;
+      var picked = [];
+      for (var i = 0; i < want; i++) {
+        // 第一颗：中间几层（跳过第 1 层 = 出生层，也跳过最后一层 = 井底上面那层）
+        var lo = (i === 0) ? Math.min(2, decks.length - 1) : Math.min(3, decks.length - 1);
+        var hi = decks.length - 1;
+        if (hi < lo) { lo = 0; hi = decks.length - 1; }
+        var pool = [];
+        for (var k = lo; k <= hi; k++) {
+          if (picked.indexOf(k) < 0) pool.push(k);
+        }
+        if (!pool.length) break;
+        var idx = pool[Math.floor(Math.random() * pool.length)];
+        picked.push(idx);
+        var d = decks[idx];
+        var x = Math.round(rnd(this.levelWidth * 0.22, this.levelWidth * 0.78));
+        self.spawnCrystal(x, d.y - 46, self.rollCrystalKind(i > 0));
+      }
     }
 
     /** 按权重抽魂晶颜色；preferRare = 高台上的第二颗，更偏向深渊/腐化 */
@@ -9953,6 +10826,9 @@
 
     /** 按房间类型决定敌人编成 */
     spawnEnemies(roomType) {
+      // 3.0 批6：竖塔的敌人**沿 y 分布**（每层 1 只），不再是"沿 x 均分 + 从最高面往下掉"。
+      // 原来那套在竖塔里会把所有怪一起落到井底 —— 玩家下到第 3 层会发现整座塔已经空了。
+      if (this._verticalRoom) return this.spawnTowerEnemies(roomType);
       var floor = this.floor;
       var pool = poolForFloor(floor);
       var list = [];
@@ -10063,6 +10939,49 @@
           }
         }
       }
+    }
+
+    /**
+     * 竖塔的敌人投放（3.0 批6 · §2.6 / S6）
+     * ------------------------------------------------------------
+     * 规则：**每层 1 只**（层距 220 只够 1v1），井底那层不放 ——
+     * 井底是"被追下来的怪汇合、决战"的地方，一进去就被围死就没人愿意往下走了。
+     * 位置：每层的 x 随机，但避开左端（玩家出生点 / 走位区），
+     * 高度直接落在该层楼板顶面上方 —— 不再"从最高面往下掉"。
+     * 第 1 层也放：玩家一下来就得处理它，这就是"每层都要停一下"的第一个决定。
+     */
+    spawnTowerEnemies(roomType) {
+      var floor = this.floor;
+      var pool = poolForFloor(floor);
+      var decks = (this.towerDecks || []).slice();
+      if (!decks.length) return;
+      var W = this.levelWidth;
+      var self = this;
+      var count = 0;
+      decks.forEach(function (d) {
+        var key = pool[ri(0, pool.length - 1)];
+        // x：右半部分的随机位置（左端留给出生与走位，墙上还有层号刻痕）
+        // 下限 0.45W：出生点在 0.30W，留出 ~190px 的缓冲，不会一进房就贴脸
+        var x = Math.round(rnd(W * 0.45, W * 0.86));
+        var y = d.y - 30;
+        var e = self.spawnEnemy(key, x, y, floor);
+        if (!e) return;
+        count++;
+        e._towerLevel = d.level;
+        e.spawnLevel = d.level;
+      });
+      // 与横厅同档的总量（6~10 只）：竖塔层数就是它的敌人上限，不再额外加。
+      if (this.floor >= 2 && count > 0 && Math.random() < 0.35) {
+        // 额外一只精英，压在第 2 层的另一侧（同一层两只 = 1v2，练走位）
+        var d2 = decks[Math.min(1, decks.length - 1)];
+        var key2 = Math.random() < 0.5 ? 'guard' : 'necro';
+        var e2 = this.spawnEnemy(key2, Math.round(rnd(W * 0.30, W * 0.58)), d2.y - 30, floor);
+        if (e2) { e2._towerLevel = d2.level; e2.spawnLevel = d2.level; }
+      }
+      // 远程怪的"高台"在竖塔里就是它自己那一层：把它们标记出来，批7 的弹丸穿层要用
+      this.enemies.forEach(function (e) {
+        if (e && e.alive && e.behavior === 'shooter') e.onTowerDeck = true;
+      });
     }
 
     /* ============================================================
@@ -10476,6 +11395,8 @@
       var hp = stats.hp;
 
       var e = {
+        // 3.0 批7：稳定 id —— 验收脚本要能跟住"这一只怪是不是追下来了"
+        id: (this._enemySeq = (this._enemySeq || 0) + 1),
         key: key, def: def, sprite: spr, name: def.name, tier: def.tier, behavior: def.behavior,
         hp: hp, maxHp: hp, atk: stats.atk,
         alive: true, state: 'patrol', dir: Math.random() < 0.5 ? -1 : 1,
@@ -11192,6 +12113,8 @@
       var fury = this.furyActive() ? FURY.dmgMult : 1;  // 狂怒状态：伤害 ×1.5
       var base = this.hero.attack * env * fury * rnd(0.85, 1.15) * (mult || 1)
         * (sharp ? DODGE.sharpMult : 1) * power + pass.flat;
+      // 3.0 批2 · B2：力量药水 —— 本房间攻击 ×1.25（进战斗房时自动喝一瓶，见 buildLevel）
+      if (this._roomStrength && this._roomStrength !== 1) base *= this._roomStrength;
       if (this.hero.combo > 0 && this.comboCount > 0) {
         // 环境：连击风暴 —— 连击加成本身也被放大
         var comboRate = this.hero.combo + (this.hasEnv('连击风暴') ? this.envValue('comboBonus') * 100 : 0);
@@ -11518,7 +12441,7 @@
     updateGuard(dt, onGround) {
       var h = this.hero, now = this.time.now;
       var ti = this.touchInput;
-      var held = (this.keys.guard.isDown || this.keys.guard2.isDown || ti.guardHeld) &&
+      var held = (this.keys.guard.isDown || ti.guardHeld) &&
         !this.dodging && !this.diving && !this.attacking && !this.isCharging && !this.heroDead;
       // v2.9 P1：空中按下是「加速下坠」，不是举盾 —— 两个状态必须互斥，
       // 否则玩家想落下一层时会莫名其妙举着盾飘下去。
@@ -11788,6 +12711,8 @@
       if (shieldLoss > 0 && h.shield > 0) {
         var used = Math.min(h.shield, shieldLoss);
         h.shield -= used;
+        // 3.0 批1 · A4：实时回写内核，否则下一次 pushStats 会把这几点盾补回去
+        callBridge('consume', 'shield', used);
         this.showFloat(h.x, h.y - 84, '诅咒 · 护盾 -' + used, UI.danger, 15);
         msgs.push('护盾 -' + used);
       }
@@ -11857,6 +12782,9 @@
       ring.setStrokeStyle(3, eco, 0.85);
       this.tweens.add({ targets: ring, radius: 96, alpha: 0, duration: 380, onComplete: function () { ring.destroy(); } });
       sfx('curse');
+      // 3.0 批1 · A4：脉冲是"一次改好几种资源"的批量结算（护盾 / 生命 / 生命上限），
+      // 逐条 consume 必漏，这里直接把引擎的权威值抄回内核一次。
+      callBridge('syncVitals', { hp: h.hp, maxHp: h.maxHp, shield: h.shield });
       // HUD 上的诅咒胶囊同步闪一下：屏幕中间有横幅、右上角有落点，不再是「只有一圈光」
       this.curseFlashUntil = this.time.now + ENV.flash;
       // 以前这条只在「生命流失 / 虚弱 / 迟钝」命中时才弹，其余情况（脆弱、护甲腐蚀、纯环境类…）
@@ -12394,11 +13322,16 @@
       if (this.hero.shield > 0) {
         var use = Math.min(this.hero.shield, remain);
         this.hero.shield -= use;
+        // 3.0 批1 · A4：护盾是「引擎会消耗、内核不知道」的资源，必须实时回写。
+        // 不回写的后果：下一次 pushStats（拿遗物 / 买商品 / 祭坛）把盾补回内核旧值，
+        // 玩家会觉得"盾被打光了，捡件遗物又满了"。
+        callBridge('consume', 'shield', use);
         remain -= use;
         this.showFloat(this.hero.x, this.hero.y - 80, '-' + fmt(use), '#5fd0e0', 16);
         sfx('shield');
       }
       if (remain > 0) {
+        var hpBefore = this.hero.hp;
         this.hero.hp -= remain;
         // 遗物：不朽图腾 —— 致命伤保留 1 血，每层一次（与经典内核的 hasTotem 同语义）
         if (this.hero.hp <= 0 && this.hasPerk('totem') && !this._totemUsedFloor) {
@@ -12407,6 +13340,8 @@
           this.showFloat(this.hero.x, this.hero.y - 116, '不朽图腾 · 保留 1 血', '#ffd76a', 18);
           sfx('levelUp');
         }
+        // 3.0 批1：扣血回写内核 —— 只报**实际损失**（图腾把血留住时就不能按 remain 扣）
+        callBridge('consume', 'hp', Math.max(0, Math.round(hpBefore - this.hero.hp)));
         this.showFloat(this.hero.x, this.hero.y - 62, '-' + fmt(remain), '#ff6b6b', 18);
         // 挡下来的这一下不该把角色打得后仰 —— 盾还举着，人站着
         if (!blockedFront && !this.furyActive()) {
@@ -12467,6 +13402,8 @@
       var before = this.hero.hp;
       this.hero.hp = Math.min(this.hero.maxHp, this.hero.hp + amount * m);
       var real = Math.round(this.hero.hp - before);
+      // 3.0 批1：引擎回血同样要让内核知道（否则同一房间内任何 pushStats 都会把血压回去）
+      if (real > 0) callBridge('gain', 'hp', real);
       if (real > 0 && showText !== false) this.showFloat(this.hero.x, this.hero.y - 68, '+' + real, '#7fd6a0', 17);
       else if (real <= 0 && m < 1 && showText !== false) this.showFloat(this.hero.x, this.hero.y - 68, '治疗被抑制', '#b8a8ff', 13);
       this.refreshHud();
@@ -12477,6 +13414,8 @@
       if (!this.running || this.heroDead) return;
       if (this.hero.potions <= 0) { this.showFloat(this.hero.x, this.hero.y - 68, '没有药水', '#ffb347', 15); sfx('error'); return; }
       this.hero.potions--;
+      // 3.0 批1：药水是内核的商品，引擎喝了必须回写数量，否则下次 pushStats 又"补"回一瓶
+      callBridge('consume', 'potions', 1);
       this.healHero(Math.round(this.hero.maxHp * 0.35), true, true);
       sfx('potion');
       this.refreshHud();
@@ -13266,6 +14205,146 @@
       this.tweens.add({ targets: this.centerMsg, alpha: 0, delay: 1100, duration: 500 });
     }
 
+    /* ============================================================
+       3.0 批4 · 「选了之后要看得见」（施工清单 §1.9 第二层 / 第三层）
+       ------------------------------------------------------------
+       第二层 = 变化横幅：画布上方 1.2s 的一条，逐行列出「攻击 5 → 6」。
+       第三层 = HUD 微动：对应属性位放大回弹 + 数字滚动。
+       内容由宿主用**快照对比**算好再交进来（list = [{label,from,to,color,key}]），
+       引擎只管画 —— 这样 20 个事件 / 13 个奖励 / 12 件商品都不用各写一句文案。
+       ============================================================ */
+    showGain(list) {
+      var self = this;
+      var items = (list || []).filter(function (x) {
+        return x && x.label && x.from !== undefined && x.to !== undefined && x.from !== x.to;
+      });
+      if (!items.length) return false;          // 无变化 → 不显示（避免"什么都没发生"还弹横幅）
+      var MAX = 4, extra = 0;
+      if (items.length > MAX) { extra = items.length - MAX; items = items.slice(0, MAX); }
+
+      // 先做 HUD 微动（即使横幅建不出来也要动）
+      this.flashGain(items);
+
+      // 旧横幅先收掉：连续两个入口触发时不叠加
+      if (this._gainBanner) {
+        try { this.tweens.killTweensOf(this._gainBanner); } catch (e) { /* 忽略 */ }
+        try { this._gainBanner.destroy(true); } catch (e) { /* 忽略 */ }
+        this._gainBanner = null;
+      }
+
+      var W = this.scale.width;
+      var rowH = 19, padX = 16, padY = 10, fontSize = 13;
+      // 位置：HUD 下沿再往下 40px，屏幕上方 1/4 —— 不挡战斗区（屏幕下方 3/4）
+      var topY = Math.round(this.hudSafeTop() + 40);
+      var L = this.add.container(Math.round(W / 2), topY).setScrollFactor(0).setDepth(2900);
+
+      var texts = [], maxW = 0;
+      items.forEach(function (it, i) {
+        var arrow = it.from + ' → ' + it.to;
+        var t = self.add.text(0, i * rowH, it.label + '  ' + arrow, {
+          fontSize: fontSize + 'px', color: it.color || UI.text, fontStyle: 'bold'
+        }).setOrigin(0.5, 0);
+        t.setShadow(0, 1, '#04060f', 4, false, true);
+        L.add(t);
+        texts.push(t);
+        if (t.width > maxW) maxW = t.width;
+      });
+      if (extra > 0) {
+        var t2 = this.add.text(0, items.length * rowH, '等 ' + extra + ' 项', {
+          fontSize: (fontSize - 2) + 'px', color: UI.sub
+        }).setOrigin(0.5, 0);
+        L.add(t2);
+        if (t2.width > maxW) maxW = t2.width;
+        texts.push(t2);
+      }
+      var rows = texts.length;
+      var pw = Math.max(120, Math.round(maxW + padX * 2));
+      var ph = Math.round(rows * rowH + padY * 2);
+      // 背板最后建、再 sendToBack：面板语言复用 addPanel（圆角 + 顶部内高光 + 1px 描边）
+      var g = this.addPanel(L, -pw / 2, -padY, pw, ph, { radius: 10 });
+      if (typeof L.sendToBack === 'function') L.sendToBack(g);
+      // 文本整体在容器里居中：容器以 W/2 为原点，文本 origin 也是 0.5
+      L._gainLines = texts.map(function (t) { return t.text; });
+      this._gainBanner = L;
+
+      // 1.2s = 0.15 淡入 / 0.9 停留 / 0.15 淡出
+      L.setAlpha(0);
+      this.tweens.add({
+        targets: L, alpha: 1, duration: 150,
+        onComplete: function () {
+          self.tweens.add({
+            targets: L, alpha: 0, delay: 900, duration: 150,
+            onComplete: function () {
+              if (self._gainBanner === L) self._gainBanner = null;
+              try { L.destroy(true); } catch (e) { /* 忽略 */ }
+            }
+          });
+        }
+      });
+      this.refreshHud();
+      return true;
+    }
+
+    /**
+     * HUD 微动（第三层）：那一位数字自己动一下
+     * ------------------------------------------------------------
+     * 放大 1.25 再回弹（0.35s）+ 数字从旧值滚到新值（0.4s）。
+     * 手机横屏属性面板被收起时**跳过** —— 收起了就没法动，硬展开反而打断。
+     */
+    flashGain(list) {
+      var self = this;
+      if (!list || !list.length) return false;
+      var panelOpen = !(this.statPanel && this.statPanel.visible === false);
+      var any = false;
+      list.forEach(function (it) {
+        var target = null, suffix = '', key = it.key;
+        if (panelOpen && self.statItems) {
+          for (var i = 0; i < self.statItems.length; i++) {
+            if (self.statItems[i].key === key) {
+              target = self.statItems[i].text;
+              suffix = self.statItems[i].suffix || '';
+              break;
+            }
+          }
+        }
+        // 属性面板里没有的项：生命 / 金币 / 药水各自有常驻文本，也要动一下
+        if (!target) {
+          if (key === 'hp' || key === 'maxHp') target = self.hpText;
+          else if (key === 'gold') target = self.pointText;
+          else if (key === 'potions') target = self.potionText;
+        }
+        if (!target || !target.visible) return;
+        any = true;
+        // 放大回弹：先放大 1.25，再回到 1（合计 0.35s）
+        self.tweens.add({
+          targets: target, scale: 1.25, duration: 150, yoyo: true,
+          ease: 'Sine.easeOut', onComplete: function () { try { target.setScale(1); } catch (e) { /* 忽略 */ } }
+        });
+        // 数字滚动：只对属性面板里那几个"纯数字"项做
+        // （生命是 "hp / maxHp" 格式、金币/药水各有前缀，滚起来反而更乱）
+        var isStat = (target !== self.hpText && target !== self.pointText && target !== self.potionText);
+        if (!isStat) return;
+        var short = self._statLabelOf(key);
+        var roll = { v: it.from };
+        self.tweens.add({
+          targets: roll, v: it.to, duration: 400,
+          onUpdate: function () {
+            try { target.setText(short + ' ' + Math.round(roll.v) + suffix); } catch (e) { /* 忽略 */ }
+          }
+        });
+      });
+      return any;
+    }
+
+    /** 属性面板里某个 key 的短标签（攻 / 暴 / 闪 …），flashGain 的数字滚动要用 */
+    _statLabelOf(key) {
+      if (!this.statItems) return '';
+      for (var i = 0; i < this.statItems.length; i++) {
+        if (this.statItems[i].key === key) return this.statItems[i].label;
+      }
+      return '';
+    }
+
     refreshHud() {
       var h = this.hero;
       // 生命 / 护盾：数值同步（补间由 updateMeters 逐帧推进）
@@ -13315,11 +14394,14 @@
       this.potionText.setText('药水 ×' + this.hero.potions + (this.isTouch ? '' : '   [L]'));
 
       // 属性面板（为 0 的项淡出，只突出当前生效的属性）
+      var roomStr = this._roomStrength || 1;
       if (this.statItems) {
         this.statItems.forEach(function (it) {
           var v = h[it.key];
           v = (typeof v === 'number') ? Math.round(v) : 0;
-          it.text.setText(it.label + ' ' + v + it.suffix);
+          // 3.0 批2：力量药水生效时在「攻」后面挂 ×1.25 —— 不提示的话玩家不知道喝了
+          var suffix = (it.key === 'attack' && roomStr > 1) ? (' ×' + roomStr) : it.suffix;
+          it.text.setText(it.label + ' ' + v + suffix);
           var show = it.always || v > 0;
           it.text.setAlpha(show ? 1 : 0.26);
           it.box.setAlpha(show ? 1 : 0.22);
@@ -13460,9 +14542,13 @@
       }
       this.updateStamina(dt);
       this.updateFury(dt);
+      this.updateTraps(dt, time);   // 3.0 批8：机关陷阱状态机
       this.paintLinkMeter();   // 连携点跟着主角走（0 点时内部立刻返回，几乎不花钱）
       this.updateWebFx();      // 织网者的缠身状态（同上，没被缠时不做任何事）
       this.updateHero(dt);
+      // 3.0 批5：竖塔的相机是手动纵向滚（横向恒 0），必须在 updateHero 之后 ——
+      // 用的是这一帧英雄的最新位置，否则镜头永远慢一帧（上下跑动时会明显拖影）
+      if (this._verticalRoom) this.updateTowerCamera();
       if (this.collapse) this.updateCollapse(dt, time);
       if (this.holdZone) this.updateHold(dt, time);
       // 断桥的活体装饰（雾 / 落石 / 残板）：只在有断桥的房间里才有内容
@@ -13487,13 +14573,21 @@
       var self = this;
       var cam = this.cameras.main;
       var viewL = cam.scrollX - 80, viewR = cam.scrollX + this.scale.width + 80;
+      // 3.0：竖塔的视野是**纵向**受限的 —— 只判 x 会把"下面几层的那只怪"当成最近敌人，
+      // 于是左下角的目标面板一直亮着、还正好盖在出生点上（实测截图里玩家被它挡住）。
+      var viewT = cam.scrollY - 80, viewB = cam.scrollY + this.scale.height + 80;
 
       this.enemies.forEach(function (e) {
         if (!e.alive || !e.meter) return;
+        var onScreen = e.sprite.x > viewL && e.sprite.x < viewR &&
+                       e.sprite.y > viewT && e.sprite.y < viewB;
         var d = Math.abs(e.sprite.x - h.x);
-        if (d < nd) { nd = d; nearest = e; }
-        var onScreen = e.sprite.x > viewL && e.sprite.x < viewR;
+        // 最近敌人只在**屏内**的里面挑：屏外的怪不该抢走目标面板
+        if (onScreen && d < nd) { nd = d; nearest = e; }
         var show = onScreen && (e.tier !== 'normal' || e === nearest || e.hp < e.maxHp);
+        // 3.0：竖塔里血条会跟着敌人一起卷到 HUD 后面 —— 那一段本来就读不到，
+        // 画上去只会压在按钮行上变成噪音（横厅里因为房间只有一层，几乎没有机会发生）
+        if (show && (e.sprite.y - e.sprite.displayHeight - 13) < self.hudSafeTop()) show = false;
         self.setMeterValue(e.meter, e.hp / e.maxHp);
         if (show) {
           var bw = e.barW;
@@ -13553,6 +14647,15 @@
 
       var onGround = h.body.blocked.down || h.body.touching.down;
 
+      // ===== 3.0 批9：陷阱硬直（夹击门 0.6s）=====
+      // 这期间不接受任何操作，但重力照走 —— 它惩罚的是"贪刀"，不是"让你摔死"
+      if (this.time.now < (this.heroStunUntil || 0)) {
+        h.setVelocityX(h.body.velocity.x * 0.86);
+        if (this.chargeRing) this.chargeRing.setVisible(false);
+        this.isCharging = false;
+        return;
+      }
+
       // ===== 闪避（翻滚）：冲刺期间不接受其他操作 =====
       if (this.dodging) {
         this.updateDodge(dt, onGround);
@@ -13586,18 +14689,34 @@
         this._wasAirborne = true;
       }
 
-      // ===== v2.9 P1：空中按下 = 加速下坠 + 穿过单向平台 =====
-      // 地面按下仍然走防御（updateGuard 只在着地时成立）——两个状态互斥，
-      // 触屏摇杆下推 / 键盘 S·↓ / 防御按钮都能触发，不需要新按钮。
+      // ===== v2.9 P1 / 3.0 批5：空中按下 = 加速下坠；站在薄板上按 ↓ = 穿一层 =====
+      // 3.0 把原来共用「防御」的 S 与 ↓ 拆开了（§2.5）：
+      //   S  / 触摸防御按钮          → 举盾（updateGuard 只认 guard，不再认 guard2）
+      //   ↓  / 摇杆下推 / 触摸下推    → 穿脚下的单向平台（横厅）/ 下一层（竖塔）
+      // 好处不只是竖塔：横厅里"从浮台上下去"原来得先跳一下再按 ↓，现在直接按 ↓ 就行，
+      // 而且两边是**同一套逻辑**，不用写两份。
       var ti = this.touchInput;
-      var downHeld = k.guard.isDown || k.guard2.isDown || ti.guardHeld || ti.downHeld;
-      var fastFall = !onGround && downHeld && !this.diving && !this.dodging && !this.isCharging && !this.heroDead;
+      var dropHeld = k.guard2.isDown || ti.downHeld;
+      // 只认"按下的那一瞬间"（上升沿），不认"按住"——按住 ↓ 一路穿到底等于把 10 层楼板白做
+      var dropJust = dropHeld && !this._dropHeldPrev;
+      this._dropHeldPrev = dropHeld;
+
+      if (dropJust && onGround && !this.diving && !this.dodging && !this.heroDead &&
+          !this.isCharging && this.standingOnThin()) {
+        this.startDropThrough();
+      }
+      // 穿层窗口到点 → 恢复碰撞；期间不要被别的分支提前恢复
+      if (this._dropUntil && this.time.now > this._dropUntil) this._dropUntil = 0;
+
+      // 加速下坠：空中按住 ↓（竖塔里**不**开穿透，否则跳一下按住就一路穿到底）
+      var fastFall = !onGround && dropHeld && !this.diving && !this.dodging && !this.isCharging && !this.heroDead;
       if (fastFall) {
         h.setVelocityY(Math.min(FASTFALL.speed, Math.max(h.body.velocity.y, 0) + FASTFALL.accel * dt / 1000));
-        this.setPlatformPassThrough(true);
-      } else if (this._platformPass) {
-        this.setPlatformPassThrough(false);
       }
+      // 单向平台的穿透状态每帧统一裁决：穿层窗口内 / 加速下坠（横厅）时需要开，
+      // 其余时刻必须关 —— 分成两处各改一次会打架（穿层刚结束就被 fastFall 的 else 关掉）
+      var passNeeded = !!this._dropUntil || (fastFall && !this._verticalRoom);
+      if (this._platformPass !== passNeeded) this.setPlatformPassThrough(passNeeded);
 
       // ===== 防御（举盾）：按住 S / ↓ =====
       var guardState = this.updateGuard(dt, onGround);
@@ -13790,6 +14909,36 @@
       return this.groundY;
     }
 
+    /**
+     * 让一只敌人穿一层楼板（3.0 批7）
+     * ------------------------------------------------------------
+     * 和玩家用的是同一套机构：给它一个向下的初速 + 一个 220ms 的"放行窗口"，
+     * 窗口内 enemyTileFilter 只放行**它自己**（旁边那几只照旧站着），
+     * 窗口结束碰撞恢复 —— 于是它落到下一层楼板上，而不是一路穿到底。
+     */
+    startEnemyDrop(e) {
+      if (!e || !e.sprite) return false;
+      var now = this.time.now;
+      e.state = 'drop';
+      e.dropUntil = now + TOWER.dropMs;
+      e.dropReadyAt = now + TOWER.dropCooldown;
+      e.sprite._deckPassUntil = now + TOWER.dropMs;
+      e.sprite.setVelocityY(TOWER.dropVy);
+      this.showFloat(e.sprite.x, e.sprite.y - 70, '追!', '#ff9a5a', 12);
+      return true;
+    }
+
+    /** 竖塔里离某个 y 最近的楼板（含井底）：掉落回传 / 批7 的穿层判定共用 */
+    nearestTowerDeckY(y) {
+      var best = this.groundY, bd = Math.abs(y - this.groundY);
+      var decks = this.towerDecks || [];
+      for (var i = 0; i < decks.length; i++) {
+        var dd = Math.abs(y - decks[i].y);
+        if (dd < bd) { bd = dd; best = decks[i].y; }
+      }
+      return best;
+    }
+
     /** 掉落传送目标：缺口**右侧**最近的安全段（不往回送） */
     pitRespawnX(x) {
       var segs = (this.groundSegments && this.groundSegments.length)
@@ -13804,7 +14953,10 @@
     teleportHeroTo(x, opts) {
       var h = this.hero, now = this.time.now;
       opts = opts || {};
-      h.body.reset(x, this.groundY - 80);
+      // 3.0 批6：竖塔的"地面"不是 groundY 那一条线 —— 井底在很深的地方，
+      // 掉出底部时把人送到井底等于让他从头再走一遍塔。所以纵向落点可由调用方指定。
+      var y = (typeof opts.y === 'number') ? opts.y : (this.groundY - 80);
+      h.body.reset(x, y);
       h.setVelocity(0, 0);
       this.invulnUntil = Math.max(this.invulnUntil || 0, now + (opts.invuln != null ? opts.invuln : PIT.invuln));
       this._pitLockUntil = now + (opts.lock != null ? opts.lock : PIT.lock);
@@ -13834,7 +14986,14 @@
       h.hp = Math.max(1, h.hp - dmg);           // 单次不致死
       this._hurtAt = now;                        // 同时打断魂晶读条
       this.showFloat(h.x, h.y - 60, '坠落 -' + dmg + '（' + Math.round(pct * 100) + '%）', '#ff8a7a', 18);
-      this.teleportHeroTo(this.pitRespawnX(h.x));
+      if (this._verticalRoom) {
+        // 3.0 批6 · §2.9 第 8 项：竖塔的"掉出去"是纵向的 —— 送回**最近的楼板**，
+        // 而不是送回井底（井底可能在几百像素之外，等于白走一遍塔）。
+        var yDeck = this.nearestTowerDeckY(h.y);
+        this.teleportHeroTo(clamp(h.x, 80, this.levelWidth - 80), { y: yDeck - 60 });
+      } else {
+        this.teleportHeroTo(this.pitRespawnX(h.x));
+      }
       this.cameras.main.flash(140, 120, 30, 40);
       sfx('land');
       this.refreshHud();
@@ -15581,7 +16740,20 @@
         if (p._lifeUntil && now > p._lifeUntil) { p.destroy(); return false; }
 
         // 触地 / 撞墙 → 插住（不挂碰撞体，直接查静态砖块）
-        if (self.projectileGroundY(p.x, p.y) !== null || p.body.blocked.left || p.body.blocked.right || p.body.blocked.down) {
+        // 3.0 批7 · §2.6：竖塔的远程怪弹丸**能穿 1 层楼板**。
+        //   不做的话，站在上层的射手对下层玩家是"完全无威胁"，竖塔就少了一整类压力；
+        //   但也不能无限穿 —— 一只射手站顶层就能打井底，玩家连躲的地方都没有。
+        //   墙（左右边界）与井底地面**永远不穿**：边界是边界。
+        var hit = self.projectileHitAt(p.x, p.y);
+        var pierceOpen = !(p._deckPassUntil && now < p._deckPassUntil);
+        var onDeck = !!(hit && hit.kind === 'deck' && pierceOpen);
+        var onSolid = !!(hit && hit.kind !== 'deck') ||
+          p.body.blocked.left || p.body.blocked.right || p.body.blocked.down;
+        if (onDeck && (p._pierceFloors || 0) > 0) {
+          p._pierceFloors -= 1;
+          p._deckPassUntil = now + 160;      // 这段窗口内不再判这一层（否则每帧都"撞"）
+          self.flashTowerDeck(p.x, hit.y);   // 楼板闪一下 = "这一发是从上面来的"
+        } else if (onDeck || onSolid) {
           p._grounded = true;
           p.setVelocity(0, 0);
           p._stickUntil = now + (p._stick || 700);
@@ -15647,6 +16819,42 @@
     }
 
     /** 投掷物的落点：命中地面砖块 / 平台时返回台面 y，否则 null */
+    /**
+     * 弹丸在这个位置撞到了什么（3.0 批7）
+     * 与 projectileGroundY 同一套判定，只是多回答"撞的是**哪一种**"：
+     *   ground = 井底 / 横厅地面（不可穿）  deck = 塔内楼板（可穿 1 层）  solid = 墙 / 实体楼板（不可穿）
+     * @returns {{kind:'ground'|'deck'|'solid', y:number, level:(number|null)}|null}
+     */
+    projectileHitAt(x, y) {
+      var best = null;
+      this.groundTiles.forEach(function (t) {
+        if (!t.body || t.body.enable === false) return;
+        if (Math.abs(t.x - x) > 32) return;
+        var top = t.y - 32;
+        if (y >= top - 2 && y <= top + 46 && (!best || top > best.y)) best = { kind: 'ground', y: top, level: null };
+      });
+      this.platformTiles.forEach(function (t) {
+        if (!t.body) return;
+        if (Math.abs(t.x - x) > 32) return;
+        var top = t.y - 10;
+        if (!(y >= top - 2 && y <= top + 16)) return;
+        if (best && top <= best.y) return;
+        best = {
+          kind: t._solidDeck ? 'solid' : (t._towerDeck != null ? 'deck' : 'solid'),
+          y: top, level: (t._towerDeck != null ? t._towerDeck : null)
+        };
+      });
+      return best;
+    }
+
+    /** 楼板被弹丸穿过时闪一下（3.0 批7：给玩家一个"这一发从上面来"的读招线索） */
+    flashTowerDeck(x, y) {
+      if (!this._verticalRoom) return;
+      var g = this.add.rectangle(x, y - 5, 52, 4, 0xffe0a0, 0.55).setDepth(3.5);
+      this.tweens.add({ targets: g, alpha: 0, duration: 240, onComplete: function () { g.destroy(); } });
+      this.spark(x, y - 6, 0xd8c8a0);
+    }
+
     projectileGroundY(x, y) {
       var surf = null;
       this.groundTiles.forEach(function (t) {
@@ -16375,6 +17583,14 @@
           return;
         }
 
+        // --- 穿层下落中（3.0 批7）：这段时间它不能出手，和玩家穿层时不能举盾对称 ---
+        if (e.state === 'drop') {
+          spr.setVelocityX(0);
+          spr.play(self.mobAnimKey(e, 'walk'), true);
+          if (time >= e.dropUntil) e.state = 'chase';
+          return;
+        }
+
         // --- 攻击后摇 / 判定 ---
         if (e.state === 'attack') {
           spr.setVelocityX(0);
@@ -16463,6 +17679,22 @@
           if (spr.body.blocked.down || time >= e.pounceUntil) {
             e.state = 'chase'; spr.setVelocityX(0); e.attackAt = time + 400;
           }
+          return;
+        }
+
+        // ===== 3.0 批7 · 穿层追击（§2.6）=====
+        // 玩家跳到 / 下穿到下方超过 120px，而自己还站在楼板上 → 穿一层追下去。
+        // 为什么必须做：门锁是 clear，而竖塔有 6~10 层。玩家冲到第 8 层发现第 2 层
+        // 漏了一只，要爬 6 层回去 —— 那是"很烦"，不是"很难"。
+        // 一次只穿一层（和玩家同规则）；冷却 1.2s 让它们**错开落地**，
+        // 否则一群怪同时灌下来，井底直接变成围殴（§2.6 的副作用）。
+        // 只做 chaser / charger：远程怪不下楼（它的弹丸能穿层），辅助怪不动。
+        var canDropBehavior = (def.behavior === 'chaser' || def.behavior === 'charger');
+        if (self._verticalRoom && TOWER.enemyChase && canDropBehavior && !def.fly &&
+            time >= (e.dropReadyAt || 0) &&
+            (spr.body.blocked.down || spr.body.touching.down) &&
+            self.hero.y > spr.y + 120 && !e._aimCore) {
+          self.startEnemyDrop(e);
           return;
         }
 
@@ -16829,6 +18061,17 @@
       if (state.settings.screenShake2D !== false) this.cameras.main.shake(80, 0.003);
     }
 
+    /**
+     * 敌方弹丸在竖塔里能穿几层楼板（3.0 批7 · §2.6）
+     * 只跟"是不是竖塔"有关：横厅没有楼层，穿了也没意义。
+     * 1 层是刻意的上限 —— 和玩家/近战怪的"一次一层"对齐。
+     */
+    pierceFloorsFor(e) {
+      if (!this._verticalRoom) return 0;
+      if (!e) return 0;
+      return 1;
+    }
+
     enemyShoot(e) {
       var spr = e.sprite, def = e.def;
       // 守点房：朝核心射击（§3.4 "站 260–340px 外朝核心射击；弹道不做格挡"）
@@ -16862,6 +18105,7 @@
         if (kind !== 'orb') s.setRotation(ang);
         s._dmg = Math.round(e.atk * 0.9);
         s._core = aimCore;
+        s._pierceFloors = this.pierceFloorsFor(e);   // 3.0 批7：竖塔弹丸穿 1 层楼板
         this.projectiles.push(s);
         this.spark(mx, my, color);
         return;
@@ -16873,6 +18117,7 @@
       p.setVelocity(dir * 330, clamp((ty - (spr.y - 34)) * 0.9, -170, 170));
       p._dmg = aimCore ? CORE.dmgShooter : Math.round(e.atk * 0.9);
       p._core = aimCore;
+      p._pierceFloors = this.pierceFloorsFor(e);     // 3.0 批7：竖塔弹丸穿 1 层楼板
       this.projectiles.push(p);
       this.spark(spr.x + dir * 24, spr.y - 34, 0xd8b0ff);
     }
@@ -17329,6 +18574,22 @@
       try { s.showCenter(String(text), color || '#ffd76a'); return true; } catch (e) { return false; }
     },
     /**
+     * 3.0 批4：变化横幅（宿主的 withFeedback 调它）+ 只动 HUD 的变体
+     * list = [{ key, label, from, to, color }]
+     */
+    showGain: function (list) {
+      var s = state.scene;
+      if (!s || !s.ready) return false;
+      if (typeof s.showGain !== 'function') return false;
+      try { return s.showGain(list); } catch (e) { console.warn('[战斗2D] 变化横幅失败：', e); return false; }
+    },
+    flashGain: function (list) {
+      var s = state.scene;
+      if (!s || !s.ready) return false;
+      if (typeof s.flashGain !== 'function') return false;
+      try { return s.flashGain(list); } catch (e) { return false; }
+    },
+    /**
      * 机制参数默认值（按难度给整张表）
      * 预览页 / 调参工具直接读它，别再手抄一份 MECH_DIFF —— 抄的那份改引擎就会过期。
      */
@@ -17374,6 +18635,38 @@
      * 塌陷 × 骨架的回退开关（方案 §11）
      * setCollapseSkeleton('double', false) → 双层房不再被抽成塌陷房（回到"塌陷只能挂平厅"）
      */
+    /**
+     * 3.0 批9 的回退开关提前在这里露一手：towerEnemyChase:false 即"敌人不追下来"（§2.11）。
+     * 同时给 towerStep 留口子（层距 220 / 260 的对比实验）。
+     */
+    setTowerOptions: function (o) {
+      if (!o) return { step: TOWER.step, enemyChase: TOWER.enemyChase };
+      if (typeof o.enemyChase === 'boolean') TOWER.enemyChase = o.enemyChase;
+      if (typeof o.step === 'number' && o.step >= 160 && o.step <= 320) TOWER.step = Math.round(o.step);
+      return { step: TOWER.step, enemyChase: TOWER.enemyChase };
+    },
+    getTowerOptions: function () {
+      return { step: TOWER.step, enemyChase: TOWER.enemyChase, topPad: TOWER.topPad, dropMs: TOWER.dropMs };
+    },
+
+    /**
+     * 3.0 批9 · 竖塔抽签回退开关（§2.11）
+     * on=false 等价于 SKELETON.vertical = 'off' —— 抽签表里不再出现竖塔（一键退回平厅/双层/断桥）。
+     */
+    setSkeletonVertical: function (on) {
+      SKELETON.vertical = on ? 'on' : 'off';
+      if (!on) {
+        // 从 enabled 里摘掉，图鉴 / 抽签统计也不会再列它
+        SKELETON.enabled = SKELETON.enabled.filter(function (k) { return k !== 'vertical'; });
+      } else if (SKELETON.enabled.indexOf('vertical') < 0) {
+        SKELETON.enabled.push('vertical');
+      }
+      return SKELETON.vertical;
+    },
+    getSkeletonVertical: function () {
+      return { vertical: SKELETON.vertical, enabled: SKELETON.enabled.slice() };
+    },
+
     setCollapseSkeleton: function (name, on) {
       if (name === 'double') MECHANIC.collapseOnDouble = !!on;
       else if (name === 'bridge') MECHANIC.collapseOnBridge = !!on;
@@ -17400,6 +18693,25 @@
       var s = state.scene;
       if (!s || !s.ready) return false;
       return s.buildDebugRoom(opts || {});
+    },
+
+    /**
+     * 3.0 批5：把当前房间重建为**竖塔**（调试 / 自动化验收用）
+     * ------------------------------------------------------------
+     * 不走抽签（那是批9 的事），只强制这一间房换坐标系数一次。
+     * 调用前需要引擎已 startRun。
+     */
+    buildTowerRoom: function (opts) {
+      var s = state.scene;
+      if (!s || !s.ready) return false;
+      var node = {};
+      var base = s.roomNode || { type: 'enemy' };
+      for (var k in base) node[k] = base[k];
+      if (opts) for (var k2 in opts) node[k2] = opts[k2];
+      node.type = node.type || 'enemy';
+      s._forceSkeleton = 'vertical';
+      s.buildLevel(node);
+      return true;
     },
     getCollapseRecords: function () {
       var s = state.scene;
@@ -17665,6 +18977,8 @@
           mode: SKELETON.mode,
           room: s.roomSkeleton || null,
           names: SKELETON.names,
+          enabled: SKELETON.enabled.slice(),
+          vertical: SKELETON.vertical,
           samples: SKELETON.samples,
           last: SKELETON.last ? { skeleton: SKELETON.last.skeleton, floor: SKELETON.last.floor, roomType: SKELETON.last.roomType } : null
         };
@@ -17674,8 +18988,53 @@
           deckGaps: (s.deckGaps || []).map(function (g) { return { x0: Math.round(g.x0), x1: Math.round(g.x1) }; }),
           bridgeGaps: (s.bridgeGaps || []).map(function (g) { return { x0: Math.round(g.x0), x1: Math.round(g.x1) }; }),
           groundSegments: (s.groundSegments || []).map(function (g) { return { x0: Math.round(g.x0), x1: Math.round(g.x1) }; }),
-          hudSafeTop: s.hudSafeTop ? s.hudSafeTop() : null
+          hudSafeTop: s.hudSafeTop ? s.hudSafeTop() : null,
+          roomDepth: s.roomDepth || 0
         };
+        // 3.0 批5：竖塔（坐标系 / 楼板 / 相机）—— 验收全靠这一份
+        o.tower = s._verticalRoom ? {
+          roomDepth: s.roomDepth, steps: s.towerSteps, step: TOWER.step,
+          topPad: (s.towerTopPad != null ? s.towerTopPad : TOWER.topPad), groundY: Math.round(s.groundY),
+          levelWidth: Math.round(s.levelWidth), viewW: s.scale.width,
+          decks: (s.towerDecks || []).map(function (d) { return { level: d.level, y: Math.round(d.y) }; }),
+          walls: s.platformTiles.filter(function (t) { return t && t._towerWall; }).length,
+          scrollX: Math.round(s.cameras.main.scrollX),
+          scrollY: Math.round(s.cameras.main.scrollY),
+          camBounds: {
+            x: Math.round(s.cameras.main._bounds.x), y: Math.round(s.cameras.main._bounds.y),
+            w: Math.round(s.cameras.main._bounds.width), h: Math.round(s.cameras.main._bounds.height)
+          },
+          dropActive: !!s._dropUntil,
+          platformPass: !!s._platformPass,
+          // 批6：敌人与魂晶的 y 分布（验收"每层 1 只"与"魂晶在楼板上"）
+          enemies: (s.enemies || []).filter(function (e) { return e && e.alive; }).map(function (e) {
+            return {
+              id: e.id, name: e.name, level: e.spawnLevel || null,
+              x: Math.round(e.sprite.x), y: Math.round(e.sprite.y),
+              behavior: e.behavior, fly: !!(e.def && e.def.fly),
+              state: e.state || null,
+              deckPass: !!(e.sprite && e.sprite._deckPassUntil && s.time.now < e.sprite._deckPassUntil),
+              dropReadyAt: Math.round(e.dropReadyAt || 0)
+            };
+          }),
+          crystals: (s.crystals || []).filter(function (c) { return c && !c.taken; }).map(function (c) {
+            return { x: Math.round(c.core ? c.core.x : 0), y: Math.round(c.core ? c.core.y : 0), kind: c.kind };
+          }),
+          portal: s.portal ? { x: Math.round(s.portal.x), y: Math.round(s.portal.y) } : null,
+          // 批8：陷阱（类型 / 层 / 位置 / 状态）—— 验收"每层 60%"与"能躲"全靠这一份
+          traps: (s.traps || []).map(function (t) {
+            return {
+              kind: t.kind, level: t.level, x: t.x, w: t.w, y: t.y,
+              state: t.state, stayMs: Math.round(t.stayMs || 0)
+            };
+          }),
+          trapDensity: (function () {
+            var decks = (s.towerDecks || []).length;
+            var withTrap = {};
+            (s.traps || []).forEach(function (t) { withTrap[t.level] = (withTrap[t.level] || 0) + 1; });
+            return { decks: decks, layers: Object.keys(withTrap).length, total: (s.traps || []).length };
+          })()
+        } : null;
         o.objective = s.roomObjective ? {
           type: s.roomObjective.type, need: s.roomObjective.need,
           got: s.roomObjective.got, done: !!s.roomObjective.done
@@ -17856,6 +19215,12 @@
         o.bossHp = s.boss ? Math.round(s.boss.hp) : null;
         o.hero = {
           hp: Math.round(s.hero.hp), maxHp: s.hero.maxHp, shield: Math.round(s.hero.shield),
+          // 3.0 批1：验收要"引擎读到的攻击 == 内核攻击"，攻击 / 各成长属性必须能直接读
+          attack: Math.round(s.hero.attack), critRate: Math.round(s.hero.critRate || 0),
+          critDamage: Math.round(s.hero.critDamage || 0), dodge: Math.round(s.hero.dodge || 0),
+          thorn: Math.round(s.hero.thorn || 0), vampire: Math.round(s.hero.vampire || 0),
+          combo: Math.round(s.hero.combo || 0), execute: Math.round(s.hero.execute || 0),
+          strength: s.hero.strength || 0,
           x: Math.round(s.hero.x), y: Math.round(s.hero.y),
           vx: Math.round(s.hero.body.velocity.x), vy: Math.round(s.hero.body.velocity.y),
           onGround: !!(s.hero.body.blocked.down || s.hero.body.touching.down),

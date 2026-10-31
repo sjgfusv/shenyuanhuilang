@@ -1,7 +1,7 @@
 {
   "name": "深渊回廊",
   "short_name": "深渊回廊",
-  "description": "深渊回廊 —— 文字 roguelike 与 2D 横版实时战斗试炼",
+  "description": "深渊回廊 —— 纯前端零构建的横版实时动作 Roguelike",
   "lang": "zh-CN",
   "start_url": "./主界面.html",
   "scope": "./",

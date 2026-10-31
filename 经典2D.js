@@ -428,7 +428,14 @@
     var p = s.player || {};
     var base = {
       hp: p.hp, maxHp: p.maxHp, attack: p.attack,
-      shield: p.shield || 0, potions: p.potions || 0
+      shield: p.shield || 0, potions: p.potions || 0,
+      // 3.0 批2 · B2：力量药水数量。引擎在"进战斗房"时自己消耗一瓶并给本房间
+      // 伤害加成，消耗完通过 bridge.consume('strength') 回写 —— 不走这条通道
+      // 的话，下一次 pushStats 会把瓶数补回去，等于凭空多喝。
+      strength: p.strengthPotions || 0,
+      // 3.0 批2 · B4：生命护盾（每房间开始 +2 盾）。2D 里没有"回合"，
+      // 所以重译成房间级语义 —— 这是文档定案 S3 的写法。
+      lifeShield: s.hasLifeShield ? 1 : 0
     };
     var d = derivedStats(s);
     for (var k in d) if (Object.prototype.hasOwnProperty.call(d, k)) base[k] = d[k];
@@ -747,6 +754,17 @@
   /**
    * 旧遗物（内核的 17 件，只有中文 label）→ 新遗物 id
    * 规划 §3.4 的映射表；映到 null 的表示"效果由内核自己继续处理"或已废弃。
+   *
+   * ⚠️ 这张表是**名字翻译**，不是**效果翻译**（3.0 批3 · 修正）
+   * ------------------------------------------------------------
+   * P3 按规划 §3.4 把 24 件遗物**为 2D 重写**过效果（"攻击 +1"→"一种打法"），
+   * 比文字模式好，所以效果不用改；真正遗留的是**名字**：
+   * 事件日志写「战斗怒火」、HUD 却显示「重击」，同一件东西两个名字。
+   * 因此这张表只承担"老 label → 引擎 id"这一件事，玩家看到的名字由
+   * relicDisplayName() 统一给出（与 HUD 的 relicView 同源）。
+   * 另一条已知副作用：三件老遗物（生命结晶 / 恢复之心 / 回声之环）都映到
+   * soulDrinker，于是事件池里"击杀回血"是 3/17 而非 1/27 —— 这是映射表的历史
+   * 分布问题，改它属于"改事件产出内容"（文档 §1.5 的 B 方案），3.0 不动。
    */
   var LEGACY_RELIC_MAP = {
     '战斗怒火': 'heavyStrike',
@@ -788,6 +806,26 @@
     if (!r) return { label: '?', desc: '' };
     if (r.ranged && heroIsRanged()) return { label: r.ranged.label, desc: r.ranged.desc };
     return { label: r.label, desc: r.desc };
+  }
+
+  /**
+   * 老遗物中文 label → HUD 上显示的名字（3.0 批3 · C 方案）
+   * ------------------------------------------------------------
+   * 保留老 17 件遗物（名字是文字时代的记忆），但要让「事件日志里写的名字」
+   * 和「HUD 上显示的名字」是同一个。内核那边打日志前会问这里（见 主程序.js 的
+   * relicDisplayName），于是日志写「重击」，HUD 也是「重击」——
+   * 中间那次 label → 引擎 id 的转换对玩家隐形，但名字不再分裂。
+   *
+   * 映射为 null 的两件（神圣庇护 / 猎人本能）名字本来就一致，原样返回。
+   * 双套遗物按**当前英雄**给名（近战「重击」/ 远程「坠星」），与 HUD 的 relicView 同源。
+   */
+  function relicDisplayName(label) {
+    if (!label) return label;
+    var id = LEGACY_RELIC_MAP[label];
+    if (!id) return label;
+    var r = RELIC_BY_ID[id];
+    if (!r) return label;
+    return relicView(r).label;
   }
 
   /** 把 state.relics 里的元素统一取成引擎认识的 id（新遗物直接有 id，旧的走映射表） */
@@ -1183,6 +1221,77 @@
       choiceResult: function (r) { onChoiceResult(r || {}); },
       roomAction: function (p) { onRoomAction(p || {}); },
       /**
+       * 引擎侧资源的**消耗回写**（3.0 批1 · A4，通用通道）
+       * ------------------------------------------------------------
+       * 凡是「引擎会消耗、内核不知道」的资源 —— 目前是护盾与力量药水 ——
+       * 都会被下一次 pushStats() 按内核旧值补回去：盾被打光，拿件遗物又满了；
+       * 力量药水喝了，数量一瓶不少。各打各的补丁迟早漏一处，所以统一走这一条。
+       *
+       * ⚠️ **不回推**：引擎刚刚自己扣完了，这里再 pushStats 会覆盖它正在进行的
+       *    结算（而且 pushStats 会连带 refreshHud，重入到伤害流程里）。
+       *    只把内核记成"已经消耗过了"，等下一次正常下发时自然一致。
+       *
+       * @param {string} key  'shield' | 'hp' | 'potions' | 'strength'
+       * @param {number} n    本次消耗量（正数）
+       * @returns {boolean} 是否认这个 key
+       */
+      consume: function (key, n) {
+        var s = S();
+        if (!s || !s.player) return false;
+        var v = Math.max(0, Math.round(n || 0));
+        if (!v) return false;
+        var p = s.player;
+        switch (key) {
+          case 'shield':   p.shield = Math.max(0, Math.round(p.shield || 0) - v); break;
+          case 'hp':       p.hp = Math.max(0, Math.round(p.hp || 0) - v); break;
+          case 'potions':  p.potions = Math.max(0, (p.potions || 0) - v); break;
+          case 'strength': p.strengthPotions = Math.max(0, (p.strengthPotions || 0) - v); break;
+          default: return false;
+        }
+        return true;
+      },
+      /**
+       * 引擎侧资源的**获得回写**（consume 的反向）
+       * ------------------------------------------------------------
+       * 引擎自己也会加资源：战士每房间开局的「坚韧之盾」+3、魂晶回盾、
+       * 完美格挡回盾、药水回血……这些都不经过内核，于是下一次 pushStats()
+       * 会把它们抹掉（玩家体感：「战士的盾刚出来，一进商店就没了」）。
+       * 与 consume 对称，都是"引擎说了算，内核跟着记账"，都不回推。
+       */
+      gain: function (key, n) {
+        var s = S();
+        if (!s || !s.player) return false;
+        var v = Math.max(0, Math.round(n || 0));
+        if (!v) return false;
+        var p = s.player;
+        switch (key) {
+          case 'shield':   p.shield = Math.round(p.shield || 0) + v; break;
+          case 'hp':       p.hp = Math.min(p.maxHp || 9999, Math.round(p.hp || 0) + v); break;
+          case 'potions':  p.potions = (p.potions || 0) + v; break;
+          case 'gold':     p.gold = (p.gold || 0) + v; break;
+          default: return false;
+        }
+        return true;
+      },
+      /**
+       * 生命 / 护盾的**绝对值同步**（引擎 → 内核）
+       * ------------------------------------------------------------
+       * 腐化脉冲与环境伤害是"一次结算改好几种资源"的批量路径（还夹着上限削减、
+       * 护盾转生命之类），逐条 consume 必然漏一处。批量结算末尾直接把引擎的
+       * 权威值抄回来最省心 —— 与 onRoomCleared 里的 syncHp / syncShield 同一语义。
+       */
+      syncVitals: function (v) {
+        var s = S();
+        if (!s || !s.player || !v) return false;
+        if (typeof v.maxHp === 'number' && v.maxHp > 0) s.player.maxHp = Math.round(v.maxHp);
+        if (typeof v.hp === 'number') {
+          s.player.hp = Math.max(0, Math.round(v.hp));
+          if (s.player.maxHp) s.player.hp = Math.min(s.player.maxHp, s.player.hp);
+        }
+        if (typeof v.shield === 'number') s.player.shield = Math.max(0, Math.round(v.shield));
+        return true;
+      },
+      /**
        * v2.9 腐化魂晶：引擎只负责"请宿主发奖"，遗物池与诅咒池都在内核。
        * 返回 { ok, relicName, curseName }；返回 ok:false 时引擎会折成金币，
        * 不会出现「捡了腐化魂晶却什么都没发生」。
@@ -1207,6 +1316,7 @@
         var s = S();
         var items = shopItemsFor();
         var gold = (typeof points === 'number') ? points : ((s.player && s.player.gold) || 0);
+        var xp = (s.player && s.player.xp) || 0;
         return {
           groups: [{
             title: '补给',
@@ -1217,15 +1327,17 @@
               // 限购 90 是「不限购」的哨兵值（与 主程序.js 的 buildShopOptions 同一约定）
               var limited = max > 0 && max < 90;
               var soldOut = limited && owned >= max;
-              var afford = gold >= cost;
+              // 3.0 批2 · S1：经验也能付账，所以"买得起"要算两种货币
+              var afford = gold >= cost || xp >= cost;
               return {
                 id: String(i),
-                label: it.label + '　' + cost + ' 金币' + (limited ? '（限购 ' + owned + '/' + max + '）' : ''),
+                label: it.label + '　' + cost + (gold >= cost ? ' 金币' : (xp >= cost ? ' 经验' : ' 金币')) +
+                  (limited ? '（限购 ' + owned + '/' + max + '）' : ''),
                 // desc / tag 是给引擎商店面板用的：引擎那两行的字段名是 desc 与 tag，
                 // 之前一个都没给 —— 商品说明整行空白，右上角还会因为缺字段显示 undefined
                 // （引擎旧代码读 it.price，而这里给的是 cost，见 战斗2D.js 的注释）。
                 desc: it.desc || '',
-                tag: soldOut ? '已售罄' : (afford ? '可购买' : '金币不足'),
+                tag: soldOut ? '已售罄' : (afford ? (gold >= cost ? '可购买' : '经验可买') : '买不起'),
                 cost: cost,
                 affordable: afford,
                 owned: soldOut,
@@ -1241,17 +1353,21 @@
         var it = (s.shopOptions || [])[idx];
         if (!it) return { ok: false, msg: '商品不存在' };
         var cost = shopCostOf(it);
-        var gold = (s.player && s.player.gold) || 0;
         var owned = (s.shopPurchaseCount && s.shopPurchaseCount[it.label]) || 0;
         if (it.maxPurchase > 0 && it.maxPurchase < 90 && owned >= it.maxPurchase) {
           return { ok: false, msg: '已达限购' };
         }
-        if (gold < cost) return { ok: false, msg: '金币不足' };
-        s.player.gold = gold - cost;
+        // 3.0 批2 · S1：与宿主自己的商店面板同一条付款规则（金币优先，不足则经验）
+        var payWith = payShopCost(s, cost);
+        if (!payWith) return { ok: false, msg: '金币与经验都不足' };
         if (!s.shopPurchaseCount) s.shopPurchaseCount = {};
         s.shopPurchaseCount[it.label] = owned + 1;
         if (typeof it.apply === 'function') { try { it.apply(); } catch (e) { warn('商品生效失败：', e); } }
-        try { kernel().addLog('购买了 ' + it.label + '（-' + cost + ' 金币）'); } catch (e) { /* 忽略 */ }
+        try {
+          kernel().addLog(payWith === 'xp'
+            ? ('购买了 ' + it.label + '（-' + cost + ' 经验）')
+            : ('购买了 ' + it.label + '（-' + cost + ' 金币）'));
+        } catch (e) { /* 忽略 */ }
         syncPoints();
         pushStats();
         return { ok: true, msg: '已购买 ' + it.label, points: s.player.gold, name: it.label };
@@ -1515,6 +1631,8 @@
     var s = S(), e = engine();
     if (!s) return;
     if (p && typeof p.hp === 'number') syncHp(p.hp);
+    // 3.0 批1 · A4：护盾也要写回内核，否则清房后的奖励 / 遗物一 pushStats 就把盾补满
+    if (p && typeof p.shield === 'number') syncShield(p.shield);
     // ⚠️ 房型一律以**引擎载荷**为准（p.roomType 来自引擎的 roomNode），
     //    不要信 s.currentRoom —— 它是宿主在 rt:room 里镜像出来的，
     //    遇到"引擎换了房而宿主还没收到 rt:room"的时序就会错，表现为该弹结算的房间
@@ -1610,10 +1728,14 @@
     if (kind === 'reward') {
       var idx = parseInt(id, 10);
       var opt = (s.rewardOptions || [])[idx];
-      if (opt && typeof opt.apply === 'function') {
-        try { opt.apply(); } catch (e) { warn('奖励生效失败：', e); }
-        try { kernel().addLog('你选择了：' + opt.label); } catch (e) { /* 忽略 */ }
-      }
+      // 3.0 批1 · A1 + 批4：apply 包进 withFeedback ——
+      // 它负责「pushStats 下发」和「选后变化横幅」两件事（以前这里只有前者，甚至没有）。
+      withFeedback(function () {
+        if (opt && typeof opt.apply === 'function') {
+          try { opt.apply(); } catch (e) { warn('奖励生效失败：', e); }
+          try { kernel().addLog('你选择了：' + opt.label); } catch (e) { /* 忽略 */ }
+        }
+      });
       s.rewardOptions = [];
       // 属性奖励领完，若本房还有遗物产出就接着弹（精英 / Boss 必掉）
       if (s._pendingRelic) {
@@ -1630,10 +1752,13 @@
         if (openRelicPanel('裂隙遗物')) return;
       } else if (id === 'deep') {
         addCurses(1, 1);
-        var bonus = s.floor * 8;
-        s.player.gold = (s.player.gold || 0) + bonus;
-        syncPoints();
-        try { kernel().addLog('沉沦的回报：+' + bonus + ' 金币。'); } catch (e) { /* 忽略 */ }
+        // 3.0 批4：金币也是"变了要说一声"的一项
+        withFeedback(function () {
+          var bonus = s.floor * 8;
+          s.player.gold = (s.player.gold || 0) + bonus;
+          syncPoints();
+          try { kernel().addLog('沉沦的回报：+' + bonus + ' 金币。'); } catch (e) { /* 忽略 */ }
+        });
         if (openRelicPanel('裂隙遗物')) return;
       } else {
         s._shopDiscount = 0.10;      // 本层商店 −10%（P3-5 的商店面板消费它）
@@ -1645,13 +1770,16 @@
     if (kind === 'relic') {
       var rix = parseInt(id, 10);
       var picked = (s._relicChoices || [])[rix];
-      if (id === 'skip') {
-        s.player.gold = (s.player.gold || 0) + 20;
-        syncPoints();
-        try { kernel().addLog('跳过遗物，换成 20 金币。'); } catch (e) { /* 忽略 */ }
-      } else if (picked) {
-        addRelic(picked);
-      }
+      // 3.0 批4：跳过换金币 / 拿遗物，都要有"我拿了什么"的确认
+      withFeedback(function () {
+        if (id === 'skip') {
+          s.player.gold = (s.player.gold || 0) + 20;
+          syncPoints();
+          try { kernel().addLog('跳过遗物，换成 20 金币。'); } catch (e) { /* 忽略 */ }
+        } else if (picked) {
+          addRelic(picked);
+        }
+      });
       s._relicChoices = [];
       // 宝箱房是"非战斗房"，要走 finishRoomGoal 才开门；精英/Boss 房已经开过门了
       finishNonCombatRoom();
@@ -1682,10 +1810,16 @@
     if (kind === 'event') {
       var ei = parseInt(id, 10);
       var ev = (s.eventOptions || [])[ei];
-      if (ev && typeof ev.apply === 'function') {
-        try { ev.apply(); } catch (e) { warn('事件生效失败：', e); }
-        try { kernel().addLog('事件：' + ev.label); } catch (e) { /* 忽略 */ }
-      }
+      // 3.0 批1 · A2 / A3 + 批4：事件既改属性、又可能**直接发遗物**
+      // （暗影交易 5 件 / 神秘商人 / 知识祭坛 / 许愿池抽到遗物）。
+      // 内核的 chooseRelicByRarity 是 `state.relics.push(relic)`，绕过了宿主的 addRelic ——
+      // withFeedback 里的 pushRelics() 会用 LEGACY_RELIC_MAP 把老 label 翻成引擎 id。
+      withFeedback(function () {
+        if (ev && typeof ev.apply === 'function') {
+          try { ev.apply(); } catch (e) { warn('事件生效失败：', e); }
+          try { kernel().addLog('事件：' + ev.label); } catch (e) { /* 忽略 */ }
+        }
+      });
       s.eventOptions = [];
       finishNonCombatRoom();
       advanceToNextRoom();
@@ -1779,6 +1913,10 @@
       gain = Math.max(1, Math.round((8 + s.floor) * mult));   // enemy / elite / mirror
     }
     if (gain > 0) gain = Math.round(gain * coreMul);
+    // 3.0 批2 · B5：开局增益「双倍金币」（战斗金币 +50%）。
+    // 2.9 里这个增益是彻底的死字段：settleRoomGold 只乘难度倍率，从来不读它 ——
+    // 它和「生命护盾」是 30 项开局增益里唯二完全不生效的两个。
+    if (gain > 0 && s.hasDoubleGold) gain = Math.round(gain * 1.5);
     if (gain > 0) {
       if (s.player.gold == null) s.player.gold = 0;
       s.player.gold += gain;
@@ -1804,6 +1942,21 @@
     var v = Math.max(0, Math.round(hp));
     s.player.hp = v;
     if (s.player.maxHp && v > s.player.maxHp) s.player.hp = s.player.maxHp;
+  }
+
+  /**
+   * 引擎 → 内核：护盾（3.0 批1 · A4）
+   * ------------------------------------------------------------
+   * 护盾是唯一"引擎侧会消耗、内核却不知道"的资源：引擎扣盾（受击 / 腐化脉冲）
+   * 之后内核手里还是旧值，于是下一次 pushStats() 把盾补回去 —— 玩家的体感是
+   * 「盾被打光了，拿件遗物盾又满了」，等于白送满盾。
+   * 实时路径走 bridge.consume('shield', n)；这里只是**清房时的兜底**
+   * （万一某条扣盾路径漏了通知，过门时也会被引擎的权威值纠正回来）。
+   */
+  function syncShield(v) {
+    var s = S();
+    if (!s || !s.player) return;
+    s.player.shield = Math.max(0, Math.round(v || 0));
   }
 
   /* ============================================================
@@ -1837,6 +1990,47 @@
     '力量药水': 'rare'
   };
 
+  /**
+   * 「选前预告」文本（3.0 批4 · 第一层）
+   * ------------------------------------------------------------
+   * 内核的 13 种奖励 label 都是**确定值**，所以能预告：读一次当前值，写成「攻击 5 → 6」。
+   * 随机结果（事件）不预告 —— 那一层交给选后的快照对比（它不关心变化是怎么来的）。
+   */
+  var REWARD_PREVIEW = [
+    { re: /^攻击\s*\+(\d+)$/,        key: 'attack',     label: '攻击' },
+    { re: /^生命上限\s*\+(\d+)$/,    key: 'maxHp',      label: '生命上限' },
+    { re: /^护盾\s*\+(\d+)$/,        key: 'shield',     label: '护盾' },
+    { re: /^治疗药水\s*\+(\d+)$/,    key: 'potions',    label: '药水' },
+    { re: /^金币\s*\+(\d+)$/,        key: 'gold',       label: '金币' },
+    { re: /^暴击伤害\s*\+(\d+)%$/,   key: 'critDamage', label: '暴伤', pct: true },
+    { re: /^暴击\s*\+(\d+)%$/,       key: 'critRate',   label: '暴击', pct: true },
+    { re: /^闪避\s*\+(\d+)%$/,       key: 'dodge',      label: '闪避', pct: true },
+    { re: /^连击\s*\+(\d+)%$/,       key: 'combo',      label: '连击', pct: true },
+    { re: /^斩杀\s*\+(\d+)%$/,       key: 'execute',    label: '斩杀', pct: true },
+    { re: /^荆棘\s*\+(\d+)$/,        key: 'thorn',      label: '荆棘' },
+    { re: /^吸血\s*\+(\d+)$/,        key: 'vampire',    label: '吸血' }
+  ];
+
+  function rewardPreviewText(label, s) {
+    var text = String(label || '');
+    // 力量药水不是"加数值"而是"多一瓶"：单独处理
+    if (/^力量药水/.test(text)) {
+      var n = (s && s.player && s.player.strengthPotions) || 0;
+      return '力量药水 ' + n + ' → ' + (n + 1);
+    }
+    var m = null, def = null, amount = 0;
+    for (var i = 0; i < REWARD_PREVIEW.length; i++) {
+      m = REWARD_PREVIEW[i].re.exec(text);
+      if (m) { def = REWARD_PREVIEW[i]; amount = parseInt(m[1], 10) || 0; break; }
+    }
+    if (!def) return '';
+    var snap = snapshotStats(s || S());
+    var from = snap[def.key];
+    if (typeof from !== 'number') return '';
+    var pc = def.pct ? '%' : '';
+    return def.label + ' ' + from + pc + ' → ' + (from + amount) + pc;
+  }
+
   function openRewardPanel() {
     var s = S(), e = engine(), k = kernel();
     if (!s || !e || typeof e.openRewardChoice !== 'function') return false;
@@ -1845,10 +2039,15 @@
     s.rewardOptions = opts;                                  // 供 choiceResult 回查 apply
     if (!opts.length) { advanceToNextRoom(); return false; }
     var cards = opts.map(function (o, i) {
+      // 3.0 批4 · 第一层「选前预告」：直接写清楚会变成多少，而不是只写「攻击 +1」
+      var pv = rewardPreviewText(o.label, s);
+      var base = REWARD_DESC[o.label] || '立即生效';
+      // 力量药水的文案也要跟上新语义（进战斗房自动喝，不是"下一场大幅提升"）
+      if (o.label === '力量药水') base = '进下一间战斗房自动喝，本房间攻击 ×1.25';
       return {
         id: String(i),
         name: o.label,
-        desc: REWARD_DESC[o.label] || '立即生效',
+        desc: pv ? (pv + '　·　' + base) : base,
         quality: REWARD_QUALITY[o.label] || 'common',
         tag: REWARD_QUALITY[o.label] === 'rare' ? '成长' : '强化'
       };
@@ -1899,6 +2098,24 @@
     return cost;
   }
 
+  /**
+   * 商店付款（3.0 批2 · S1「经验作为第二货币」）
+   * ------------------------------------------------------------
+   * 内核的规则写得很清楚（主程序.js 的 purchaseShopItem）：金币够就付金币，
+   * 金币不够而经验够就付经验，两边都不够才买不了；经验价 = 金币价。
+   * 2D 的 `buyShopItem` 原来只认金币 —— 于是经验在 2D 里彻底是**死资源**：
+   * 每场照给、图鉴照写，但一分都花不出去，知识祭坛的「−20 经验」也不肉痛。
+   * @returns {'gold'|'xp'|null} 实际用了哪种货币；null = 买不起
+   */
+  function payShopCost(s, cost) {
+    var p = (s && s.player) || {};
+    var gold = p.gold || 0;
+    var xp = p.xp || 0;
+    if (gold >= cost) { p.gold = gold - cost; return 'gold'; }
+    if (xp >= cost) { p.xp = xp - cost; return 'xp'; }
+    return null;
+  }
+
   /** 解除一条诅咒（净化商品 / 祭坛献祭共用） */
   function purifyOneCurse() {
     var s = S();
@@ -1914,26 +2131,30 @@
     if (!s || !e || typeof e.openEventPanel !== 'function') return false;
     var items = shopItemsFor();
     var gold = (s.player && s.player.gold) || 0;
+    var xp = (s.player && s.player.xp) || 0;
     var cards = items.map(function (it, i) {
       var cost = shopCostOf(it);
       var owned = (s.shopPurchaseCount && s.shopPurchaseCount[it.label]) || 0;
       var max = it.maxPurchase || 0;
       var soldOut = max > 0 && owned >= max;
-      var afford = gold >= cost;
+      var byGold = gold >= cost;
+      var afford = byGold || xp >= cost;
       return {
         id: 'buy:' + i,
         name: it.label,
-        desc: (it.rarity === 'rare' ? '稀有 · ' : '') + cost + ' 金币' +
+        // 3.0 批2：金币不够时明说"可用 X 经验"，玩家不用自己算
+        desc: (it.rarity === 'rare' ? '稀有 · ' : '') + cost + (byGold ? ' 金币' :
+              (xp >= cost ? ' 经验（金币不足）' : ' 金币')) +
               (max > 0 ? '　限购 ' + owned + '/' + max : ''),
         quality: it.rarity === 'rare' ? 'rare' : 'common',
-        tag: soldOut ? '已售罄' : (afford ? '可购买' : '金币不足'),
+        tag: soldOut ? '已售罄' : (afford ? (byGold ? '可购买' : '经验可买') : '买不起'),
         disabled: soldOut || !afford
       };
     });
     if (!cards.length) cards.push({ id: 'none', name: '暂无商品', desc: '', quality: 'common', disabled: true });
     return e.openEventPanel('shop', {
       title: '商店',
-      desc: '金币 ' + gold + '　第 ' + s.floor + ' 层',
+      desc: '金币 ' + gold + ' · 经验 ' + xp + '　第 ' + s.floor + ' 层',
       cards: cards,
       actions: [{ id: 'leave', label: '离开', primary: true }]
     });
@@ -1946,17 +2167,29 @@
     var it = (s.shopOptions || [])[idx];
     if (!it) return;
     var cost = shopCostOf(it);
-    var gold = (s.player && s.player.gold) || 0;
     var owned = (s.shopPurchaseCount && s.shopPurchaseCount[it.label]) || 0;
     if (it.maxPurchase > 0 && owned >= it.maxPurchase) return;
-    if (gold < cost) return;
-    s.player.gold = gold - cost;
-    if (!s.shopPurchaseCount) s.shopPurchaseCount = {};
-    s.shopPurchaseCount[it.label] = owned + 1;
-    if (typeof it.apply === 'function') { try { it.apply(); } catch (e) { warn('商品生效失败：', e); } }
-    try { k.addLog('购买了 ' + it.label + '（-' + cost + ' 金币）'); } catch (e) { /* 忽略 */ }
-    syncPoints();
-    pushStats();
+    // 3.0 批2 · S1：金币不够时可以用经验付（与内核同一规则，见 payShopCost）
+    // 3.0 批4：整段包进 withFeedback（mode:'hud'）—— 商店面板盖在画布上，
+    // 横幅会被挡住，所以这里只做 HUD 微动（那一位数字自己动一下）。
+    var payWith = withFeedback(function () {
+      var paid = payShopCost(s, cost);
+      if (!paid) return null;
+      if (!s.shopPurchaseCount) s.shopPurchaseCount = {};
+      s.shopPurchaseCount[it.label] = owned + 1;
+      if (typeof it.apply === 'function') { try { it.apply(); } catch (e) { warn('商品生效失败：', e); } }
+      try {
+        k.addLog(paid === 'xp'
+          ? ('购买了 ' + it.label + '（-' + cost + ' 经验）')
+          : ('购买了 ' + it.label + '（-' + cost + ' 金币）'));
+      } catch (e) { /* 忽略 */ }
+      syncPoints();
+      return paid;
+    }, { mode: 'hud' });
+    if (!payWith) {
+      try { k.addLog('金币不足（需 ' + cost + '），经验也不足（需 ' + cost + '），无法购买。'); } catch (e) { /* 忽略 */ }
+      return;
+    }
     openShopPanel();       // 重开一次刷新可购买状态
   }
 
@@ -1989,34 +2222,36 @@
   function restAction(id) {
     var s = S(), k = kernel();
     if (!s) return;
-    if (id === 'potion') {
-      if (s.player.potions > 0) {
-        s.player.potions -= 1;
-        s.player.hp = Math.min(s.player.maxHp, s.player.hp + 8);
-        try { k.addLog('你在休整点喝下药水，恢复 8 点生命。'); } catch (e) { /* 忽略 */ }
+    // 3.0 批4：休整点的回血 / 喝药也要有"变了什么"的确认（以前面板一关就啥也没有）
+    withFeedback(function () {
+      if (id === 'potion') {
+        if (s.player.potions > 0) {
+          s.player.potions -= 1;
+          s.player.hp = Math.min(s.player.maxHp, s.player.hp + 8);
+          try { k.addLog('你在休整点喝下药水，恢复 8 点生命。'); } catch (e) { /* 忽略 */ }
+        }
+      } else if (id === 'rest') {
+        var mods = null;
+        try { mods = k.difficultyModifiers(); } catch (e) { mods = null; }
+        var restBonus = 0;
+        if (s.difficulty === 'custom') {
+          try { restBonus = k.normalizeCustomDifficulty(s.customDifficulty).restBonus || 0; } catch (e) { restBonus = 0; }
+        } else {
+          restBonus = ((mods && mods[s.difficulty]) || (mods && mods.normal) || {}).restBonus || 0;
+        }
+        var extra = 0;
+        try { extra = k.countRelic('神圣庇护') * 2; } catch (e) { extra = 0; }
+        var restore = 5 + extra + restBonus;
+        if (restore >= 0) {
+          s.player.hp = Math.min(s.player.maxHp, s.player.hp + restore);
+          try { k.addLog('你在休整点恢复了 ' + restore + ' 点生命。'); } catch (e) { /* 忽略 */ }
+        } else {
+          var dmg = Math.abs(restore);
+          s.player.hp = Math.max(1, s.player.hp - dmg);
+          try { k.addLog('休整点环境侵蚀，你失去了 ' + dmg + ' 点生命。'); } catch (e) { /* 忽略 */ }
+        }
       }
-    } else if (id === 'rest') {
-      var mods = null;
-      try { mods = k.difficultyModifiers(); } catch (e) { mods = null; }
-      var restBonus = 0;
-      if (s.difficulty === 'custom') {
-        try { restBonus = k.normalizeCustomDifficulty(s.customDifficulty).restBonus || 0; } catch (e) { restBonus = 0; }
-      } else {
-        restBonus = ((mods && mods[s.difficulty]) || (mods && mods.normal) || {}).restBonus || 0;
-      }
-      var extra = 0;
-      try { extra = k.countRelic('神圣庇护') * 2; } catch (e) { extra = 0; }
-      var restore = 5 + extra + restBonus;
-      if (restore >= 0) {
-        s.player.hp = Math.min(s.player.maxHp, s.player.hp + restore);
-        try { k.addLog('你在休整点恢复了 ' + restore + ' 点生命。'); } catch (e) { /* 忽略 */ }
-      } else {
-        var dmg = Math.abs(restore);
-        s.player.hp = Math.max(1, s.player.hp - dmg);
-        try { k.addLog('休整点环境侵蚀，你失去了 ' + dmg + ' 点生命。'); } catch (e) { /* 忽略 */ }
-      }
-    }
-    pushStats();
+    });
     finishNonCombatRoom();
     advanceToNextRoom();
   }
@@ -2052,21 +2287,23 @@
   function shrineAction(id) {
     var s = S(), k = kernel();
     if (!s) return;
-    if (id === 'pray') {
-      var heal = Math.round((s.player.maxHp || 20) * 0.35);
-      s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
-      try { k.addLog('在祭坛祈祷，恢复 ' + heal + ' 点生命。'); } catch (e) { /* 忽略 */ }
-    } else if (id === 'sacrifice') {
-      var cost = Math.max(3, Math.round((s.player.maxHp || 20) * 0.15));
-      if (s.player.hp <= cost) {
-        try { k.addLog('生命太低，祭坛不接受这次献祭。'); } catch (e) { /* 忽略 */ }
-      } else {
-        s.player.hp -= cost;
-        try { k.addLog('献祭了 ' + cost + ' 点生命。'); } catch (e) { /* 忽略 */ }
-        purifyOneCurse();
+    // 3.0 批4：祈祷回血 / 献祭换净化，都要有"变了什么"的确认
+    withFeedback(function () {
+      if (id === 'pray') {
+        var heal = Math.round((s.player.maxHp || 20) * 0.35);
+        s.player.hp = Math.min(s.player.maxHp, s.player.hp + heal);
+        try { k.addLog('在祭坛祈祷，恢复 ' + heal + ' 点生命。'); } catch (e) { /* 忽略 */ }
+      } else if (id === 'sacrifice') {
+        var cost = Math.max(3, Math.round((s.player.maxHp || 20) * 0.15));
+        if (s.player.hp <= cost) {
+          try { k.addLog('生命太低，祭坛不接受这次献祭。'); } catch (e) { /* 忽略 */ }
+        } else {
+          s.player.hp -= cost;
+          try { k.addLog('献祭了 ' + cost + ' 点生命。'); } catch (e) { /* 忽略 */ }
+          purifyOneCurse();
+        }
       }
-    }
-    pushStats();
+    });
     finishNonCombatRoom();
     advanceToNextRoom();
   }
@@ -2168,6 +2405,107 @@
       treasure: '宝箱', shop: '商店', rest: '休整点', event: '随机事件'
     };
     return map[type] || '房间';
+  }
+
+  /* ============================================================
+     3.0 批4 · 「拿了看得见」（施工清单 §1.9）
+     ------------------------------------------------------------
+     不搬飘字，改成三层反馈：
+       ① 选前预告：奖励卡片直接写「攻击 5 → 6」（确定性奖励才做）
+       ② 选后确认：画布上方的变化横幅（引擎 API.showGain），1.2s
+       ③ HUD 微动：对应属性位放大回弹 + 数字滚动
+     核心是**快照对比**，不是给每个入口写一句文案：
+       apply 前后各拍一次 state，diff 出变化自动生成横幅。
+     于是 20 个事件 / 13 个奖励 / 12 件商品都不需要各写一句，
+     以后新增任何入口也自动有反馈，而且永远不会和实现漂移。
+     ============================================================ */
+  /** 快照里要对比的字段（顺序 = 横幅里的显示顺序） */
+  var STAT_ROWS = [
+    { key: 'attack',     label: '攻击',     color: '#ff8a7a' },
+    { key: 'maxHp',      label: '生命上限', color: '#73f0b4' },
+    { key: 'hp',         label: '生命',     color: '#73f0b4' },
+    { key: 'shield',     label: '护盾',     color: '#5fd0e0' },
+    { key: 'gold',       label: '金币',     color: '#ffd76a' },
+    { key: 'potions',    label: '药水',     color: '#ffb347' },
+    { key: 'xp',         label: '经验',     color: '#9fe0c0' },
+    { key: 'critRate',   label: '暴击',     color: '#ffd76a' },
+    { key: 'critDamage', label: '暴伤',     color: '#ffb347' },
+    { key: 'dodge',      label: '闪避',     color: '#8ab8ff' },
+    { key: 'thorn',      label: '荆棘',     color: '#c0a0ff' },
+    { key: 'vampire',    label: '吸血',     color: '#ff7ab0' },
+    { key: 'combo',      label: '连击',     color: '#9fe0c0' },
+    { key: 'execute',    label: '斩杀',     color: '#ff6b6b' }
+  ];
+
+  function snapshotStats(s) {
+    var p = (s && s.player) || {};
+    var d = derivedStats(s || {});
+    return {
+      attack: Math.round(p.attack || 0), maxHp: Math.round(p.maxHp || 0),
+      hp: Math.round(p.hp || 0), shield: Math.round(p.shield || 0),
+      gold: Math.round(p.gold || 0), potions: Math.round(p.potions || 0),
+      xp: Math.round(p.xp || 0),
+      critRate: Math.round(d.critRate), critDamage: Math.round(d.critDamage),
+      dodge: Math.round(d.dodge), thorn: Math.round(d.thorn),
+      vampire: Math.round(d.vampire), combo: Math.round(d.combo),
+      execute: Math.round(d.execute)
+    };
+  }
+
+  /** 两次快照的差异 → [{ key, label, from, to, color }]（没变化就是空数组） */
+  function diffStats(before, after) {
+    var out = [];
+    if (!before || !after) return out;
+    for (var i = 0; i < STAT_ROWS.length; i++) {
+      var row = STAT_ROWS[i];
+      var a = before[row.key], b = after[row.key];
+      if (typeof a !== 'number' || typeof b !== 'number') continue;
+      if (a === b) continue;
+      out.push({ key: row.key, label: row.label, from: a, to: b, color: row.color });
+    }
+    return out;
+  }
+
+  /**
+   * 把变化交给引擎显示
+   * mode 'banner'（默认）= 横幅 + HUD 微动；'hud' = 只动 HUD
+   * （商店购买时面板盖在画布上，横幅会被挡住，所以只做 HUD 微动）
+   */
+  function showGainFeedback(list, mode) {
+    var e = engine();
+    if (!e || !list || !list.length) return;
+    if (mode === 'hud') {
+      if (typeof e.flashGain === 'function') { try { e.flashGain(list); return; } catch (err) { /* 忽略 */ } }
+    }
+    if (typeof e.showGain === 'function') {
+      try { e.showGain(list); return; } catch (err) { /* 忽略 */ }
+    }
+    // 老引擎没有这两样：至少用一句话说清（绝不静默）
+    if (typeof e.toast === 'function') {
+      try {
+        e.toast(list.map(function (x) { return x.label + ' ' + x.from + ' → ' + x.to; }).join('　'), '#73f0b4');
+      } catch (err) { /* 忽略 */ }
+    }
+  }
+
+  /**
+   * 包一层：任何"会改数值"的入口都走它
+   * 顺序很重要 —— 先 apply，再 pushStats / pushRelics 下发，最后才给横幅：
+   * 横幅上的 to 值必须是**引擎也已经是这个数**之后的状态。
+   */
+  function withFeedback(fn, opts) {
+    var s = S();
+    if (!s || typeof fn !== 'function') return (typeof fn === 'function') ? fn() : undefined;
+    var before = snapshotStats(s);
+    var r = fn();
+    try {
+      var after = snapshotStats(s);
+      pushStats();
+      pushRelics();
+      var gain = diffStats(before, after);
+      if (gain.length) showGainFeedback(gain, (opts && opts.mode) || 'banner');
+    } catch (err) { warn('变化反馈失败：', err); }
+    return r;
   }
 
   /* ============================================================
@@ -2532,6 +2870,20 @@
     pushRelics: pushRelics,
     pushFloorPlan: pushFloorPlan,
     debug: debug,
+    /* 3.0：验收脚本要直接验"经济 / 变化对比"这几条纯函数，
+       否则只能在真实一局里碰运气。写成导出而不是另抄一份逻辑。 */
+    settleRoomGold: settleRoomGold,
+    playerStats: playerStats,
+    derivedStats: derivedStats,
+    shopCostOf: shopCostOf,
+    payShopCost: payShopCost,
+    /** 老遗物 label → 引擎显示名（内核打日志时问这一句，见批3 · C 方案） */
+    relicDisplayName: relicDisplayName,
+    /* 3.0 批4：「拿了看得见」的三块积木（快照 / 差异 / 包一层） */
+    snapshotStats: snapshotStats,
+    diffStats: diffStats,
+    withFeedback: withFeedback,
+    rewardPreviewText: rewardPreviewText,
     setEnabled: function (on) {
       try { global.localStorage.setItem(DISABLE_KEY, on ? '1' : '0'); } catch (e) { /* 忽略 */ }
       if (!on) stop();

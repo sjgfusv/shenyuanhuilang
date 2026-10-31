@@ -120,7 +120,11 @@
       assert(!w2.bridge, '第 2 层还没有断桥（先学会"上层"）', JSON.stringify(w2));
       assert(w3.bridge === 15 && w3.flat === 70 && w3.double === 15,
         '第 3~5 层 70/15/15', JSON.stringify(w3));
-      assert(w6.flat === 50 && w6.double === 30 && w6.bridge === 20, '第 6 层起回到 50/30/20', JSON.stringify(w6));
+      // 3.0 起骨架多了一种（竖塔 vertical），第 6 层起的权重表从 50/30/20 变成 45/28/19/8。
+      // 这不是回归，是设计变更：竖塔从第 6 层开始进池子，老三种必须让出一部分。
+      assert(w6.flat === 45 && w6.double === 28 && w6.bridge === 19 && w6.vertical === 8,
+        '第 6 层起 45/28/19/8（3.0：原 50/30/20）', JSON.stringify(w6));
+      assert(!w3.vertical, '第 3~5 层还没有竖塔（前 5 层先教上层与坑）', JSON.stringify(w3));
       var cnt = { flat: 0, double: 0, bridge: 0 };
       for (var j = 0; j < 400; j++) {
         var k = s.pickSkeleton({ floor: 3, roomType: 'enemy', nonCombat: false });

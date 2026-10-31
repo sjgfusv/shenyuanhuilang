@@ -23,9 +23,9 @@
   <button id="rerun">重新跑一遍</button>
   <pre id="out">准备中…</pre>
 </div>
-<script src="../vendor/phaser.min.js?v=20261022"></script>
-<script src="../角色形象.js?v=20261022"></script>
-<script src="../战斗2D.js?v=20261022"></script>
+<script src="../vendor/phaser.min.js?v=20261031-30"></script>
+<script src="../角色形象.js?v=20261031-30"></script>
+<script src="../战斗2D.js?v=20261031-30"></script>
 <script>
 (function () {
   var out = document.getElementById('out'), lines = [], pass = 0, fail = 0;
@@ -75,11 +75,15 @@
       s.floor = 20; assert(s.pickSkeleton({ floor: 20, roomType: 'boss', nonCombat: false }) === 'flat', '层主房固定平厅');
       assert(s.pickSkeleton({ floor: 20, roomType: 'treasure', nonCombat: true }) === 'flat', '非战斗房固定平厅');
       assert(s.pickSkeleton({ floor: 20, roomType: 'start', nonCombat: false }) === 'flat', '起点房固定平厅（2.9.1）');
-      var cnt = { flat: 0, double: 0, bridge: 0 };
+      // 3.0 起骨架从三种变四种（+ 竖塔 vertical）：三种老骨架的比例必须让出一部分。
+      // 2.9 的 40 / 35 / 25（合计 100）现在是 35 / 30 / 20 / 15。
+      // 这里的区间按**新设计**给，并且**多验一条竖塔** —— 覆盖反而比原来更全。
+      var cnt = { flat: 0, double: 0, bridge: 0, vertical: 0 };
       for (var i = 0; i < 1000; i++) { var k = s.pickSkeleton({ floor: 20, roomType: 'enemy', nonCombat: false }); cnt[k] = (cnt[k] || 0) + 1; }
-      assert(cnt.flat >= 350 && cnt.flat <= 450, '平厅 ≈40%', cnt.flat);
-      assert(cnt.double >= 300 && cnt.double <= 400, '双层 ≈35%', cnt.double);
-      assert(cnt.bridge >= 200 && cnt.bridge <= 300, '断桥 ≈25%', cnt.bridge);
+      assert(cnt.flat >= 300 && cnt.flat <= 400, '平厅 ≈35%（3.0：原 40%）', cnt.flat);
+      assert(cnt.double >= 250 && cnt.double <= 350, '双层 ≈30%（3.0：原 35%）', cnt.double);
+      assert(cnt.bridge >= 160 && cnt.bridge <= 240, '断桥 ≈20%（3.0：原 25%）', cnt.bridge);
+      assert(cnt.vertical >= 110 && cnt.vertical <= 190, '竖塔 ≈15%（3.0 新增）', cnt.vertical);
 
       A.setSkeletonMode('legacy');
       s.clearLevel(); s.floor = 12; s.levelWidth = 2560; s.groundY = H - 96;
@@ -122,10 +126,13 @@
       var br = terrain('bridge', 10);
       assert(br === 'bridge', '断桥建成', br);
       assert(s.bridgeGaps.length >= 1 && s.bridgeGaps.length <= 2, '断 1~2 处', s.bridgeGaps.length);
-      s.bridgeGaps.forEach(function (g) {
-        assert(g.x1 - g.x0 <= 152, '缺口 ≤ 轻点跳射程', g.x1 - g.x0);
-        assert(g.x0 >= 300 && g.x1 <= 2220, '缺口离开出生点/出口', g.x0 + '-' + g.x1);
-      });
+      // 断言粒度用"全部缺口都满足"而不是"逐缺口一条"：
+      // 断桥有时 1 处、有时 2 处缺口，逐条会让总断言数在 68~70 之间跳动，
+      // 而回归基线必须**条数稳定**才能一眼看出"是少跑了还是真失败"。
+      assert(s.bridgeGaps.every(function (g) { return g.x1 - g.x0 <= 152; }),
+        '缺口 ≤ 轻点跳射程', JSON.stringify(s.bridgeGaps.map(function (g) { return g.x1 - g.x0; })));
+      assert(s.bridgeGaps.every(function (g) { return g.x0 >= 300 && g.x1 <= 2220; }),
+        '缺口离开出生点/出口', JSON.stringify(s.bridgeGaps));
       var gap = s.bridgeGaps[0];
       var inside = s.groundTiles.filter(function (t) { return t.x > gap.x0 && t.x < gap.x1; });
       assert(inside.length > 0 && inside.every(function (t) { return !t.body.enable; }), '缺口碰撞全关', inside.length);
