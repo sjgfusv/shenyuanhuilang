@@ -79,6 +79,18 @@
     splashMult: 1.15,  // 落地冲击波倍率
     splashRadius: 130, // 落地冲击波半径
     cooldown: 360,     // 两次跳劈之间的最短间隔(ms)
+    /* ---------- 3.0.2 · §1.2：竖塔的「穿得越深劈得越狠」----------
+       文档 §2.10 ② 与 D2 都写「倍率随下落距离递增 1.9 → 2.3」，代码里一直是死值 1.9。
+       这里补上，但只对**竖塔里的穿层下落**生效：
+         fallSpan = 440（两层楼高），fallBonus = 0.4
+         → 穿一层 (+220px)  = 1.9 + 0.2 = 2.1
+         → 穿两层 (+440px)  = 1.9 + 0.4 = 2.3（封顶，与 D2 的上限一致）
+       为什么不照文档的 220/0.4：那样穿一层就已经 2.3，"穿两层更狠"永远做不到 ——
+       而文档注释本身要求"穿两层更狠"，两个数在文档里是自相矛盾的（§1.2 已记录）。
+       横厅跳劈保持 1.9 不变（fallSpan 只认竖塔）。
+       回退：API.setDiveOptions({ fallBonus: 0 }) → 退回固定 1.9。*/
+    fallSpan: 440,
+    fallBonus: 0.4,
 
     // 「把敌人砸进地里」——这是一条**刻意保留的特性**，不是 bug。
     // 以前它其实是物理事故的副产品：英雄以 960px/s 下坠，和敌人之间挂着 collider，
@@ -127,7 +139,14 @@
     depthMax: 2200,
     // 批7：敌人穿层追击 —— 回退开关 towerEnemyChase:false 即整条关掉（§2.11）
     enemyChase: true,
-    dropCooldown: 1200   // 同一只怪两次穿层之间的冷却（错开落地，井底不堆叠）
+    dropCooldown: 1200,   // 同一只怪两次穿层之间的冷却（错开落地，井底不堆叠）
+    /* 3.0.2 · §1.7：竖塔的远程比例
+       作者实机：法师站上一层用「闪避 + 普攻」能无伤清完整座塔 —— 因为近战的扑击
+       跳不到 220 的上一层（见 RHYTHM.pounceSpeedYTower 的验算）。
+       只把扑击垫高还不够：怪站下层起跳的这段时间，远程英雄正好在打它。
+       所以竖塔里让**每层那只怪**有 30% 概率是远程 / 投掷单位 —— 站着不动
+       永远有弹道压力，而不只是"它跳上来才危险"。 */
+    rangedChance: 0.30,
   };
 
   // 机关陷阱（3.0 议题二 · §2.7~2.8）—— **只在竖塔里做**，横向房间一行不动
@@ -672,6 +691,26 @@
     corrupt: { key: 'corrupt', name: '腐化魂晶', color: 0xa8e85a, text: '#a8e85a' }
   };
 
+  /* ============================================================
+     3.0.2 · 右上角「数值变化」滚动字幕（§1.8）
+     ------------------------------------------------------------
+     作者要求（照抄）：右上角、腐化脉冲那一行下面、尺寸不大、
+     **由下至上**滚动、透明背景、4 行、白色或属性色、
+     淡入 0.5s → 停留 → 淡出 0.5s（单条总时长 2.5s）、
+     溢出时立刻滚走第一条、条数多时自动缩短、**只做电脑和平板**。
+
+     为什么是字幕而不是继续用横幅：横幅在屏幕上方正中，一次只能一条，
+     清房 + 击杀 + 开箱连着来的时候会互相盖掉 —— 而"我到底加了多少"
+     是玩家最想核对的东西。字幕是**累积**的：4 行能同时看到最近四次变化。
+     ============================================================ */
+  var GAINFEED = {
+    maxLines: 4,        // 4 行（作者指定）
+    lineH: 17,          // 行高：12px 字号 + 5px 间隙
+    life: 2500,         // 单条总时长（淡入 0.5 + 停留 1.5 + 淡出 0.5）
+    minLife: 1200,      // 密集时压到的最短存在时间
+    fade: 500           // 淡入 / 淡出各占的时间
+  };
+
   /* 加速下坠：空中按住穿层键（空格 / 摇杆下推）→ 快速落向下一层 */
   var FASTFALL = {
     speed: 940,      // 目标下坠速度
@@ -694,7 +733,13 @@
     armorMinFloor: 4,     // 前 3 层不霸体（教学区）
     pounceWindup: 300,    // 近战怪对空扑击的前摇（可闪）
     pounceSpeedX: 250,
-    pounceSpeedY: 700,
+    pounceSpeedY: 700,    // 横厅：跳高 700²/(2×1700) ≈ 144px（够平台，不够一层楼）
+    /* 3.0.2 · §1.7：竖塔专用起跳速度
+       层距 220，而 GRAVITY = 1700 → 够到 220 需要 v ≥ √(2×1700×220) ≈ 865。
+       取 900 → 跳高 ≈ 238px，比层距多 18px 的余量（踩准楼板边缘也够）。
+       ⚠️ 只给竖塔用：横厅的 pounce 保持 700，否则怪会跳得更高、把
+          "站双层平台就安全"的节奏整个改掉（那是 3.0 之前的平衡）。 */
+    pounceSpeedYTower: 900,
     pounceTime: 900,
     pounceCd: 2600,
     pounceMinFloor: 4,
@@ -742,10 +787,20 @@
     // 已启用的骨架：P0 只有平厅；P3 加入双层 / 断桥；3.0 批9 加入竖塔
     enabled: ['flat', 'double', 'bridge', 'vertical'],
     // 目标分布（第 16 层以后）。真正的分布按层数走 skeletonWeightTable()
-    weights: { flat: 35, double: 30, bridge: 20, vertical: 15 },
+    // 3.0.2 · §1.6：35/30/20/15 → 30/25/17/28（竖塔从"偶尔"变成"常见"）
+    weights: { flat: 30, double: 25, bridge: 17, vertical: 28 },
     names: { flat: '平厅', double: '双层', bridge: '断桥', vertical: '竖塔' },
     // 3.0 批9 的回退开关（§2.11 / §3.x）：把 vertical 从 enabled 里摘掉即"不出现竖塔"
     vertical: 'on',     // 'on' | 'off'
+    /* 3.0.2 · §1.6：竖塔保底
+       作者实机打到第 15 层只见过 1 次竖塔。查了权重表：第 6~15 层 8% × 10 层
+       = 期望 0.8 次 —— **"只遇到 1 次"完全符合设计值，是这个值本来就低**，不是 bug。
+       所以两件事一起做：调权重（见 skeletonWeightTable）+ 保底。
+       保底 = 连续 verticalPity 次"本来可以抽竖塔却没抽到"，下一次强制给。
+       0 = 关闭（只靠权重）。
+       ⚠️ 只对真实建房生效：pickSkeleton 的**抽样统计**不传 params.pity，
+          否则测试页连抽 600 次会被保底接管（比例全变成 100%）。 */
+    verticalPity: 4,
     last: null,        // 调试：最近一次抽签结果
     samples: 0         // 调试：累计抽签次数
   };
@@ -772,6 +827,10 @@
      ============================================================ */
   var TOGGLES = {
     oneWay: true, tricolor: true, channel: true, stomp: true,
+    // 3.0.2：雾带画法。'gradient' = 渐变带 + 软斑（默认），'rect' = 3.0.1 之前的硬边矩形
+    fogStyle: 'gradient',
+    // 3.0.2：数值变化滚动字幕。'on' = 右上角滚动（电脑/平板），'off' = 回到中间横幅
+    gainFeed: 'on',
     // 2.9.4：进圈才启动守点袭击。默认所有房间都过门结算；
     // 守点房是唯一例外（开门即结算、选完奖励直接开地图，门仍保留为兜底）。
     // settleAtDoor=false 可让全部房间都退回"开门即结算"。
@@ -1340,7 +1399,7 @@
     candleFull: 'rt_candle_full', candleLow: 'rt_candle_low', candleOut: 'rt_candle_out',
     // 2.9.2 §4 断桥
     gapL: 'rt_gap_l', gapR: 'rt_gap_r',
-    abyss: 'rt_abyss', fog: 'rt_fog', pier: 'rt_pier', landCrack: 'rt_land_crack',
+    abyss: 'rt_abyss', fog: 'rt_fog', fogBand: 'rt_fog_band', pier: 'rt_pier', landCrack: 'rt_land_crack',
     plankOk: 'rt_plank_ok', plankLoose: 'rt_plank_loose', plankFalling: 'rt_plank_falling',
     rockfall: 'rt_rockfall',
     slash: 'rt_slash', spark: 'rt_spark', projectile: 'rt_proj', portal: 'rt_portal'
@@ -2242,6 +2301,30 @@
     });
   }
 
+  /**
+   * 雾带（3.0.2 · 作者反馈「根本看不出是雾带，只是一个半透明的长方形」）
+   * ------------------------------------------------------------
+   * 原来的雾是 `add.rectangle(W/2, H+60, W*3, 300, env.fog, env.fogAlpha)`：
+   * 硬边、单色、单一 alpha —— 上沿是一条笔直的横线，读起来就是"一块半透明长方形"。
+   *
+   * 现在改成一张 **8×256 的竖直渐变**（顶透明 → 底不透明）拉伸到同样的位置：
+   * 上边缘自动消失（alpha 0），下边缘保持原来的浓度，颜色仍由 setTint(env.fog)
+   * 决定，所以四个难度的雾色不用各画一张。
+   * 叠加的 3 个软斑复用已有的 TEX.fog（32×32 径向渐变），给"流动"感。
+   */
+  function makeFogBandTexture(scene) {
+    canvasTex(scene, TEX.fogBand, 8, 256, function (ctx, W, H) {
+      var g = ctx.createLinearGradient(0, 0, 0, H);
+      // 三段而不是两段：雾不是线性变浓的，靠近地面才突然厚起来
+      g.addColorStop(0, 'rgba(255,255,255,0)');
+      g.addColorStop(0.42, 'rgba(255,255,255,0.34)');
+      g.addColorStop(0.74, 'rgba(255,255,255,0.78)');
+      g.addColorStop(1, 'rgba(255,255,255,1)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    });
+  }
+
   /** A11：桥墩竖纹（16×64）+ 落点撞击裂纹（48×20） */
   function makeBridgeDecalTextures(scene) {
     canvasTex(scene, TEX.pier, 16, 64, function (ctx) {
@@ -2399,6 +2482,7 @@
     makeCandleTextures(scene);
     makeGapTextures(scene);
     makeAbyssTexture(scene);
+    makeFogBandTexture(scene);
     makeBridgeDecalTextures(scene);
     makePlankTextures(scene);
     makeRockTexture(scene);
@@ -2902,6 +2986,29 @@
     o._layoutRes = res;
     o._textRes = res;          // 与 applyTextDensity 共用同一个"已设过"标记
     try { o.setResolution(res); } catch (e) { /* 忽略 */ }
+  }
+
+  /**
+   * 整个显示对象树都按缩放重设文字分辨率（3.0.2 补）
+   * ------------------------------------------------------------
+   * 玩家反馈（截图）：「暴伤 170 → 175」在自定义布局里放大后发虚。
+   * 原因：这一层的缩放是对**单元顶层对象**调 setScale(s)。如果那个对象是
+   * Container（属性面板 / 环境面板 / 数值字幕 ……），里面的 Text 只是被外层
+   * 矩阵放大 —— 它们自己的纹理还是按 100% 栅格化的那张，放大就是把小图拉大。
+   * 所以必须递归下去，让每个 Text 各自按目标尺寸重设 resolution。
+   *
+   * 只在缩放真的变了时调用（setResolution 会重新栅格化，不便宜）。
+   * maxDepth 兜住意外的自引用，正常层级只有 2~3 层。
+   */
+  function sharpenScaledTexts(o, s, depth) {
+    if (!o) return;
+    sharpenScaledText(o, s);
+    var d = depth || 0;
+    if (d >= 6) return;
+    var list = o.list;
+    if (list && list.length) {
+      for (var i = 0; i < list.length; i++) sharpenScaledTexts(list[i], s, d + 1);
+    }
   }
 
   /**
@@ -3432,6 +3539,8 @@
       this._roomMechanic = null;   // 本房间挂载的机制
       this._floorMechanicCount = 0; // 本层已出现的机制房数（每层保底用）
       this._floorMechanicKinds = {}; // 本层已出现过的机制种类（保底时优先没出现过的）
+      // 3.0.2 · §1.6：竖塔保底计数（连续几次"该抽竖塔却没抽到"），整局累积、跨层不清
+      this._verticalGap = 0;
       this.mechanicEnabled = { collapse: true, hold: true, timed: true };
       this.previewMode = false;    // 调试单房间：走进传送门 = 完成一局（不打开地图）
       this.previewEnded = false;
@@ -3625,29 +3734,99 @@
           this.bgStars.push(s);
         }
       }
-      this.fog = this.add.rectangle(W / 2, H + 60, W * 3, 300, env.fog, env.fogAlpha);
-      this.fog.setScrollFactor(0.2, 1);
+      this.fog = null;
+      this.fogBlobs = null;
+      this.buildFog();
       this.refreshEnvironment();
     }
 
     /**
-     * 雾层和"这一间是不是竖塔"对齐（3.0.1 · 玩家反馈「竖塔中间有一块红色的地方」）
+     * 建雾层（3.0.2）
      * ------------------------------------------------------------
-     * 病根：雾层是 `add.rectangle(W/2, H+60, W*3, 300, env.fog, alpha)` 且
-     * **scrollFactorY = 1** —— 它跟着世界一起滚。横厅里世界不上下动，它永远
-     * 贴在屏幕底边；竖塔的相机要往下滚 1000+ px，于是这块雾被"滚"进了屏幕中间，
-     * 看起来就像"横屏房间地面背后那块底色漏进来了"（地狱难度雾色正是暗红
-     * `0x6a0a08 @ 0.32`，截图里那块暗红就是它）。
-     * 修法：竖塔里把雾钉死在屏幕底部（scrollFactorY = 0，位置仍是 H+60），
-     * 横厅恢复原来的 0.2 视差。火星粒子同理 —— 它是氛围层，不该待在世界里的
-     * 某个深度上。
+     * 两种画法由 TOGGLES.fogStyle 决定：
+     *   'gradient'（默认）= 8×256 竖直渐变带 + ≤3 个软斑，上边缘自动消失
+     *   'rect'            = 3.0.1 之前的硬边矩形（回退用，一行切回）
+     * 位置与滚动方式全部交给 syncBackdropScroll()，这里只管"建出来"。
+     */
+    buildFog() {
+      var W = this.scale.width, H = this.scale.height;
+      var env = this.env || ENV_THEMES.normal;
+      if (TOGGLES.fogStyle === 'rect') {
+        this.fog = this.add.rectangle(W / 2, H + 60, W * 3, 300, env.fog, env.fogAlpha);
+        return;
+      }
+      makeFogBandTexture(this);
+      this.fog = this.add.image(W / 2, H + 60, TEX.fogBand);
+      this.fog.setDisplaySize(W * 3, 300);
+      // 纹理本身是白色渐变，颜色靠 tint：四个难度共用一张图
+      this.fog.setTint(env.fog);
+      this.fog.setAlpha(env.fogAlpha);
+      // 软斑：给"雾在动"的观感。画质档关粒子时不建（手机上省一次 overdraw）。
+      var wantBlobs = qp().particles && !(state.settings && state.settings.particles === false);
+      if (wantBlobs) {
+        this.fogBlobs = [];
+        for (var i = 0; i < 3; i++) {
+          var b = this.add.image(0, 0, TEX.fog);
+          b.setTint(env.fog);
+          b.setScale(rnd(7, 11));
+          b._phase = rnd(0, 6.28);
+          b._speed = rnd(0.0011, 0.0026);
+          b._amp = rnd(0.18, 0.34);
+          b._lift = rnd(-24, 42);
+          this.fogBlobs.push(b);
+        }
+      }
+    }
+
+    /**
+     * 雾层和"这一间是不是竖塔"对齐（3.0.1 建立，3.0.2 改锚点）
+     * ------------------------------------------------------------
+     * 病根①（3.0.1，已修）：雾层 `scrollFactorY = 1` 跟着世界滚，竖塔相机往下滚
+     * 1000+ px，于是这块雾被"滚"进了屏幕中间 —— 看起来像横屏房间的地面底色漏进来。
+     * 病根②（3.0.2，本版）：上一版为了躲开中部，把竖塔里的 scrollFactorY 改成 0，
+     * 钉在屏幕底边 —— 红块是没了，但**每个深度都糊在屏幕上一条带**，还正好压在
+     * 相机中下 1/3 的角色身上。
+     *
+     * 真正的答案在锚点：雾是"井底的雾"，它的世界坐标就应该是井底（groundY），
+     * 而不是屏幕底边（H）。横厅与竖塔都让雾跟着世界滚（scrollFactorY = 1），
+     * 区别只在 y 取 H+60（横厅）还是 groundY+60（竖塔）——
+     * 于是**只有相机接近井底时才看得见雾**，中部永远干净。
      */
     syncBackdropScroll() {
       if (!this.fog) return;
       var W = this.scale.width, H = this.scale.height;
-      this.fog.setPosition(W / 2, H + 60);
-      this.fog.setScrollFactor(0.2, this._verticalRoom ? 0 : 1);
-      if (this.emberEmitter) this.emberEmitter.setScrollFactor(1, this._verticalRoom ? 0 : 1);
+      var tower = !!this._verticalRoom;
+      var fy = tower ? (this.groundY + 60) : (H + 60);
+      if (TOGGLES.fogStyle === 'rect') {
+        this.fog.setSize(W * 3, 300);
+      } else {
+        this.fog.setDisplaySize(W * 3, 300);
+      }
+      this.fog.setPosition(W / 2, fy);
+      // 两者都是 1：雾是世界里的一层，不是屏幕装饰。差别只在锚点 y。
+      this.fog.setScrollFactor(0.2, 1);
+      if (this.fogBlobs) {
+        for (var i = 0; i < this.fogBlobs.length; i++) {
+          var b = this.fogBlobs[i];
+          b.setScrollFactor(0.24, 1);
+          b.setPosition(W / 2, fy - 40 + b._lift);
+        }
+      }
+      if (this.emberEmitter) this.emberEmitter.setScrollFactor(1, tower ? 0 : 1);
+    }
+
+    /** 软斑缓慢横移（每帧调一次；没有软斑时零成本） */
+    updateFogBlobs(now) {
+      var list = this.fogBlobs;
+      if (!list || !list.length) return;
+      var W = this.scale.width;
+      var baseY = this.fog ? this.fog.y : 0;
+      for (var i = 0; i < list.length; i++) {
+        var b = list[i];
+        var t = now * b._speed + b._phase;
+        b.x = W / 2 + Math.sin(t) * W * b._amp;
+        b.y = baseY - 40 + b._lift + Math.sin(t * 1.7) * 14;
+      }
     }
 
     /**
@@ -3669,8 +3848,18 @@
           s.setFillStyle(env.star, 0.12 + s._layer * 0.16);
         });
       }
-      if (this.fog) { this.fog.setFillStyle(env.fog, env.fogAlpha); }
-      if (this.fogFar) { this.fogFar.setFillStyle(env.fog, env.fogAlpha * 0.7); }
+      if (this.fog) {
+        if (TOGGLES.fogStyle === 'rect') {
+          this.fog.setFillStyle(env.fog, env.fogAlpha);
+        } else {
+          this.fog.setTint(env.fog);
+          this.fog.setAlpha(env.fogAlpha);
+        }
+      }
+      if (this.fogBlobs) {
+        this.fogBlobs.forEach(function (b) { b.setTint(env.fog); });
+      }
+      // 3.0.2：`this.fogFar` 是从未创建过的死引用（2.9 的远雾层没做），已删除
 
       // 地狱 / 困难：上升火星
       var wantEmber = !!env.ember && qp().particles && !(state.settings && state.settings.particles === false);
@@ -3891,6 +4080,29 @@
       this.pointText.setShadow(0, 1, '#04060f', 5, false, true);
       this.enemyCountText.setShadow(0, 1, '#04060f', 5, false, true);
       this.roomText.setShadow(0, 1, '#04060f', 5, false, true);
+
+      /* ---- 3.0.2 · 右上角「数值变化」滚动字幕（§1.8）----
+         位置：腐化脉冲那一行**下面**，右对齐 W-24；4 行、由下至上滚。
+         这里只建文本池（建一次、复用），内容与生命周期全在 pushGainFeed /
+         updateGainFeed 里 —— 2.5s 里新条目进来只需要改一个数字，不新建对象。
+
+         ⚠️ 四行文本装在一个 Container 里，不是四个散对象 —— 这样自定义布局
+         才能把它们当成**一个**单元整体拖动 / 缩放 / 隐藏（见 editableUnits 的
+         'h.feed'）。容器位置由 layoutGainFeed() 决定（基准），
+         updateGainFeed() 只改子对象的**局部** y，绝不 setPosition 容器 ——
+         否则玩家拖出来的偏移会被下一帧弹回原位。 */
+      this.gainFeed = [];
+      this._gainFeedLines = [];
+      this.gainFeedBox = this.add.container(W - 24, 0).setScrollFactor(0).setDepth(2900);
+      for (var gf = 0; gf < GAINFEED.maxLines; gf++) {
+        var gfl = this.add.text(0, gf * GAINFEED.lineH, '', {
+          fontSize: '12px', color: UI.text, fontStyle: 'bold'
+        }).setOrigin(1, 0).setVisible(false);
+        gfl.setShadow(0, 1, '#04060f', 4, false, true);
+        this.gainFeedBox.add(gfl);
+        this._gainFeedLines.push(gfl);
+      }
+      this.layoutGainFeed();     // 基准位置（脉冲倒计时下面）
 
       // ===== 属性面板（攻击 / 暴击 / 闪避 / 护盾 / 荆棘 / 吸血 / 连击 / 斩杀）=====
       this.statPanel = this.add.container(0, 0).setScrollFactor(0);
@@ -4136,6 +4348,7 @@
       if ((this._envHudMinTop || 0) !== minTop) {
         this._envHudMinTop = minTop;
         this.layoutEnvHud(W);   // 用新的下限重排一次；layoutEnvHud 不会再回调这里，无递归
+        this.layoutGainFeed();  // 3.0.2：字幕基准跟着这一列一起让位
       }
     }
 
@@ -4804,7 +5017,9 @@
       }
       this.centerMsg.setPosition(W / 2, H * 0.4);
       this.comboText.setPosition(W / 2, 44);
-      if (this.fog) { this.fog.setSize(W * 3, 300); this.fog.setPosition(W / 2, H + 60); }
+      // 3.0.2：雾的尺寸/位置/滚动方式统一由 syncBackdropScroll 决定（锚点跟着坐标系走），
+      //        别在这里写死 H+60 —— 竖塔的雾锚在井底 groundY，不是屏幕底边。
+      this.syncBackdropScroll();
       this.layoutStatPanel(W);
       this.layoutHudButtons(W);
 
@@ -4829,7 +5044,9 @@
       }
 
       // 地图打开时按新尺寸重排（不改变地图状态）
-      if (this.mapOpen && this.mapLayer) {
+      // 3.0.2：不再要求 `this.mapLayer` 存在 —— 层没建出来（画布曾是 1×1）时，
+      // 这一次 resize 正是唯一能把它补回来的机会。
+      if (this.mapOpen) {
         this.destroyLayer('mapLayer');
         this.buildMapLayer(W, H);
       }
@@ -4853,6 +5070,9 @@
       // 基准刚重算过，之前的「已应用偏移」记录必须作废 —— 不清的话 applyCustomLayout
       // 会以为偏移早就搬上去了，直接什么都不做。
       this._appliedOffset = {};
+      // 字幕要排在「作废记录」之后：layoutGainFeed 会把基准 + 偏移一起算好并写回记录，
+      // 放在前面的话记录随即被清空，applyCustomLayout 又会按全量偏移再搬一次（双重偏移）
+      this.layoutGainFeed();
       this._invalidateEditCache();       // 基准变了，外框缓存跟着作废
       this.applyCustomLayout();
     }
@@ -5180,6 +5400,16 @@
       unit('h.env', '环境面板', '信息面板', { objs: [this.envPanel], anchorObj: this.envPanel });
       unit('h.curse', '诅咒面板', '信息面板', { objs: [this.cursePanel], anchorObj: this.cursePanel });
       unit('h.pulse', '脉冲倒计时', '信息面板', { objs: [this.pulseText], anchorObj: this.pulseText });
+      // 数值滚动字幕（3.0.2）：四行装在 gainFeedBox 里，整组拖动 / 缩放 / 隐藏。
+      // 位置由 layoutGainFeed 算基准、applyCustomLayout 叠偏移 —— 所以 updateGainFeed
+      // 只改子对象的局部 y，绝不碰容器坐标（否则拖完下一帧就弹回去）。
+      // ⚠️ 只在字幕真的启用时注册：手机横屏本来就不画它（§1.8），
+      //    留一个拖不动的空单元只会让编辑器看起来坏了。
+      if (this.gainFeedBox && this.gainFeedEnabled()) {
+        unit('h.feed', '数值字幕', '信息面板', {
+          objs: [this.gainFeedBox], anchorObj: this.gainFeedBox
+        });
+      }
 
       // ---------- 战斗相关 ----------
       unit('h.target', '目标敌人面板', '战斗', { objs: [this.targetPanel], anchorObj: this.targetPanel });
@@ -5243,7 +5473,10 @@
             if (!o || !o.setScale) return;
             if (s !== prev.s) {
               o.setScale(s);
-              sharpenScaledText(o, s);
+              // 3.0.2：容器（属性面板 / 环境面板 / 数值字幕 ……）里的 Text 只是被
+              // 外层矩阵放大，纹理分辨率不会自己变 —— 必须递归进容器逐个重设，
+              // 否则"放大 150%"看起来就是一张被拉大的小图（玩家截图反馈）
+              sharpenScaledTexts(o, s);
             }
             if (a !== prev.a) o.setAlpha(a);
             if (hide) o.setVisible(false);
@@ -5338,6 +5571,7 @@
       this.layoutEnvHud(W);
       // 基准刚重算过，作废「已应用偏移」记录（见 applyCustomLayout）
       this._appliedOffset = {};
+      this.layoutGainFeed();             // 3.0.2：字幕基准 + 自定义偏移（要在清记录之后）
       this._invalidateEditCache();       // 基准变了，外框缓存跟着作废
       this.applyCustomLayout();
     }
@@ -5363,6 +5597,7 @@
       this.clearStaleInput();
       if (!this.editGfx) this.editGfx = this.add.graphics().setDepth(9000).setScrollFactor(0);
       this.editGfx.setVisible(true);
+      this.fillGainFeedPreview();        // 3.0.2：空字幕没有包围盒，先填四行示例才能拖
       this.drawEditOverlay();
       if (window.Trial2DLayoutBar) window.Trial2DLayoutBar.open(this);
       return true;
@@ -5379,6 +5614,7 @@
       this.running = !!this._editWasRunning && !this._finished;
       if (save !== false) this.saveCustomLayout();
       if (window.Trial2DLayoutBar) window.Trial2DLayoutBar.close();
+      this.clearGainFeedPreview();       // 3.0.2：示例文案只在编辑时存在
       this.relayoutForEdit();
     }
 
@@ -5567,6 +5803,9 @@
           if (!o || !o.setScale) return;
           o.setScale(1);
           o.setAlpha(1);
+          // 缩放回 100%：把分辨率的修正也退回去（否则文字还按放大时的
+          // 高分辨率纹理画，白占显存；容器里的 Text 同样要递归）
+          sharpenScaledTexts(o, 1);
           if (wasHidden) o.setVisible(true);
         });
         // ⚠️ 血条的子对象宽高是靠 setDisplaySize（本质就是 scaleX/scaleY）摆出来的，
@@ -6142,6 +6381,8 @@
       // 战士开局「坚韧之盾」+3 / 魂晶回盾 / 完美格挡回盾都是引擎单方面加的，
       // 内核不知道 → 下一次 pushStats 就把它们抹掉，玩家会看到盾凭空消失。
       callBridge('gain', 'shield', gain);
+      // 3.0.2 · §1.9：护盾获得进字幕（战士开局 / 完美格挡 / 魂晶回盾 / 技能共用这一个出口）
+      if (gain > 0) this.pushGainFeed([{ text: '+' + Math.round(gain) + ' 护盾', color: '#5fd0e0' }]);
       this.showFloat(h.x, h.y - 80, '+' + gain + ' 护盾', UI.accent, 16);
       this.spark(h.x, h.y - 26, 0x5fd0e0);
       if (tag) this.showFloat(h.x, h.y - 102, tag, '#9fe0c0', 13);
@@ -8814,11 +9055,28 @@
       // （那里不能再抽一次 —— 两次随机会抽出不同的骨架）。
       this._pickedSkeleton = null;
       this._towerPicked = false;
-      if (!this._forceSkeleton && SKELETON.mode !== 'legacy' && !node.mechanic) {
+      this._pickedMechanic = undefined;
+      // 3.0.2 · §1.6：**先决定"这一间有没有机制"，再抽骨架**
+      // ------------------------------------------------------------
+      // 原来是"先抽骨架、抽到竖塔就不挂机制"。于是竖塔权重一提高（8% → 18%/28%），
+      // 它就开始**吃掉机制房**：机制本该 35% 出现，实测只剩 ~25%
+      // （P5 投放回归 100 房抽样：none 92 / collapse 5 / timed 3 / hold 0）。
+      // 这正是 3.0.2 工作清单 §1.6 警告的那一条 —— 原文担心的是"挤占"，核对时
+      // 我一度以为带 mechanic 的房根本不进抽签表，实际上顺序决定了它一定会挤占。
+      // 现在反过来：机制优先，竖塔只在"没机制"的房里抽。
+      if (!this._forceSkeleton && SKELETON.mode !== 'legacy') {
+        this._pickedMechanic = node.mechanic || this.pickMechanic(node);
+      }
+      if (!this._forceSkeleton && SKELETON.mode !== 'legacy' && !this._pickedMechanic) {
         var preParams = this.skeletonParams(node);
+        preParams.pity = true;                 // 3.0.2 · §1.6：真实建房才吃保底
         var preSk = this.pickSkeleton(preParams);
         this._pickedSkeleton = preSk;
         if (preSk === 'vertical') this._towerPicked = true;
+        // 保底计数：只有"这一间本来就有资格抽竖塔"才计（层主 / 非战斗房不算）
+        if (SKELETON.verticalPity > 0 && preParams.roomType === 'enemy' && !preParams.nonCombat) {
+          this._verticalGap = (preSk === 'vertical') ? 0 : ((this._verticalGap || 0) + 1);
+        }
       }
       // ===== 3.0 批5：竖塔 = 把房间转 90°（§2.4）=====
       var vertical = this.isVerticalRoom(node);
@@ -8861,7 +9119,10 @@
       // ===== P4：机制挂载（与骨架正交）=====
       // 3.0 批5：竖塔**不挂机制** —— 塌陷 / 守点 / 限时全部是按"横向单层地面"设计的
       // （塌陷按 x 分段、守点圈在地面、限时时限按跑步距离给），直接搬进竖塔会同时坏两套。
-      var mech = this._verticalRoom ? null : this.pickMechanic(node);
+      // 3.0.2 · §1.6：机制在上面已经先抽好了（_pickedMechanic），这里直接取用 ——
+      // 抽签只做一次，否则"先看到有没有机制"与"真正挂哪个"会不一致。
+      var mech = this._verticalRoom ? null
+        : (this._pickedMechanic !== undefined ? this._pickedMechanic : this.pickMechanic(node));
       this._roomMechanic = mech;
       if (mech) {
         node.mechanic = mech;
@@ -9081,8 +9342,10 @@
       this.towerDecks = [];
       this._dropUntil = 0;
       this._dropHeldPrev = false;
+      this._dropStartY = 0;        // 3.0.2：跳劈倍率的起算点跟着房间一起清
       this._pickedSkeleton = null;
       this._towerPicked = false;
+      this._pickedMechanic = undefined;   // 3.0.2：本房间预先抽好的机制（机制优先于竖塔）
       this.heroStunUntil = 0;
       this.clearTraps();
       this._terrainParams = null;
@@ -9202,7 +9465,13 @@
       // 3.0 批9：竖塔只做**普通战斗房**，且受回退开关控制。
       // 这个判断必须和 isVerticalRoom() 一字不差 —— 否则会出现
       // "抽到了竖塔、坐标系却没转"的半成品房间（楼板铺在横厅的 groundY 上）。
-      var allowVertical = (params.roomType === 'enemy') && SKELETON.vertical !== 'off';
+      var allowVertical = (params.roomType === 'enemy') && SKELETON.vertical !== 'off' &&
+        !params.noVertical;
+      // 3.0.2 · §1.6 保底：连黑 verticalPity 次之后，这一次必须有
+      if (params.pity === true && SKELETON.verticalPity > 0 && allowVertical &&
+          (this._verticalGap || 0) >= SKELETON.verticalPity) {
+        return 'vertical';
+      }
       var pool = [];
       var total = 0;
       for (var i = 0; i < SKELETON.enabled.length; i++) {
@@ -9226,8 +9495,8 @@
      *   1     平厅 100                     教学：先学会跑跳
      *   2     平厅 75 / 双层 25            引入"上层"（这一层还没有坑）
      *   3~5   平厅 70 / 双层 15 / 断桥 15   2.9.2 F2：断桥提前到第 3 层
-     *   6~15  平厅 50 / 双层 30 / 断桥 20  引入"脚下有坑"
-     *   16+   平厅 40 / 双层 35 / 断桥 25  目标分布
+     *   6~15  平厅 40 / 双层 25 / 断桥 17 / 竖塔 18   引入"脚下有坑" + 竖塔
+     *   16+   平厅 30 / 双层 25 / 断桥 17 / 竖塔 28   目标分布（3.0.2 提权重后）
      *
      * ⚠️ 第 2 层刻意**不进**断桥：那是玩家第一次见到"上层"的一层，
      *    同时出现坑会让两个新概念互相遮蔽（反馈文档给的是"3 层起进池子"）。
@@ -9239,8 +9508,16 @@
       // 3.0 批9：**第 6 层起**才出现竖塔（§3 批9 的验收）。
       // 为什么不是更早：竖塔要玩家先接受三件新东西（一屏宽 / 按 ↓ 逐层 / 能往上爬），
       // 前 5 层已经在教"上层"与"脚下有坑"，再叠一层会互相遮蔽。
-      if (floor <= 15) return { flat: 45, double: 28, bridge: 19, vertical: 8 };
-      return { flat: 35, double: 30, bridge: 20, vertical: 15 };
+      //
+      // 3.0.2 · §1.6：竖塔权重从 8% 提到 18%（6~15 层）/ 15% 提到 28%（16 层起）。
+      // 原值 8% × 10 层 = 期望 0.8 次 —— 玩家打完 15 层只见过 1 次是**正常的**，
+      // 但"主打玩法"这么稀有等于没做。提高后 6~15 层期望 1.8 次。
+      // 被挤掉的是平厅与双层（不是断桥）：断桥 19 → 17 只让出 2 个点。
+      // ⚠️ 带 mechanic 的房根本不进这张表（buildLevel 的条件是 !node.mechanic），
+      //    所以提权重**不会**挤压塌陷 / 守点 / 限时那三类房的出现率 ——
+      //    这一点与 §1.6 原文的担心相反，已核对（见 3.0.2 工作清单的纠正）。
+      if (floor <= 15) return { flat: 40, double: 25, bridge: 17, vertical: 18 };
+      return { flat: 30, double: 25, bridge: 17, vertical: 28 };
     }
 
     /**
@@ -9750,8 +10027,28 @@
     /** 把英雄往下送一层（落板 / 玩家按 ↓ 共用；初速可调） */
     dropHeroThrough(vy) {
       this.setPlatformPassThrough(true);
+      // 3.0.2 · §1.2：记住"从哪一层开始掉"，跳劈倍率按这段下落距离递增
+      this._dropStartY = this.hero.y;
       this.hero.setVelocityY(typeof vy === 'number' ? vy : TOWER.dropVy);
       this._dropUntil = this.time.now + TOWER.dropMs;
+    }
+
+    /**
+     * 3.0.2 · §1.2：这一次跳劈的倍率
+     * ------------------------------------------------------------
+     * 横厅 = DIVE.mult（固定 1.9，与 3.0 完全一致）；
+     * 竖塔里从穿层的那一刻开始算下落距离：穿一层 2.1、穿两层 2.3（封顶）。
+     * 判定依据只有两个：这一间是竖塔 + 这次下落是从 dropHeroThrough 起的
+     * （空中按空格加速下坠**不**走这条路，所以不会白拿倍率）。
+     */
+    diveMultNow() {
+      var base = DIVE.mult;
+      if (!this._verticalRoom || !DIVE.fallBonus) return base;
+      var y0 = this._dropStartY;
+      if (!y0) return base;
+      var drop = Math.max(0, this.hero.y - y0);
+      var ratio = clamp(drop / Math.max(1, DIVE.fallSpan), 0, 1);
+      return base + ratio * DIVE.fallBonus;
     }
 
     /** 玩家是不是正踩在这个陷阱的 x 区段里（同层才算） */
@@ -10277,6 +10574,10 @@
     buildTerrain(node) {
       var params = this.skeletonParams(node);
       params.noPlatforms = !!this._noPlatforms;
+      // 3.0.2 · §1.6：机制房不抽竖塔（机制优先）。这一条与 buildLevel 里的顺序改动配套 ——
+      // 少了它，被"机制优先"跳过抽签的机制房会在 buildTerrain 里再抽一次，
+      // 抽到 vertical 就会得到"骨架是竖塔、坐标系还是横厅"的半成品。
+      params.noVertical = !!this._roomMechanic || !!this._verticalRoom;
       var sk = this._forceSkeleton || this._pickedSkeleton ||
         ((SKELETON.mode === 'legacy') ? 'flat' : this.pickSkeleton(params));
       // 回退开关：塌陷房抽到双层 / 断桥时，若对应开关关掉就退回平厅（方案 §11）
@@ -10750,12 +11051,16 @@
         } else {
           var cg = Math.round((CRYSTAL.points + this.floor) * 3);
           this.points += cg;
+          // 3.0.2 · §1.9：腐化魂晶折成的金币
+          this.pushGainFeed([{ text: '+' + cg + ' 金币（腐化魂晶）', color: '#ffd76a' }]);
           out = '腐化魂晶 · 金币 +' + cg;
         }
       } else if (kind === 'abyss') {
         color = kd.text;
         var ag = 8 + this.floor * 2;
         this.points += ag;
+        // 3.0.2 · §1.9：深渊魂晶（金币；护盾与回血由 addShield / healHero 各自记账）
+        this.pushGainFeed([{ text: '+' + ag + ' 金币（深渊魂晶）', color: '#ffd76a' }]);
         this.addShield(Math.round(CRYSTAL.shield * 1.6), null);
         this.healHero(Math.max(4, Math.round(h.maxHp * 0.12)), true);
         out = '深渊魂晶 · 金币 +' + ag + ' · 护盾 +' + Math.round(CRYSTAL.shield * 1.6);
@@ -10768,6 +11073,8 @@
       } else if (Math.random() < 0.5) {
         var g = CRYSTAL.points + this.floor;
         this.points += g;
+        // 3.0.2 · §1.9：普通魂晶的金币分支
+        this.pushGainFeed([{ text: '+' + g + ' 金币（魂晶）', color: '#ffd76a' }]);
         out = '魂晶 · 金币 +' + g;
         color = '#ffd76a';
       } else {
@@ -10983,8 +11290,23 @@
       var W = this.levelWidth;
       var self = this;
       var count = 0;
+      // 3.0.2 · §1.7：竖塔的远程配额
+      // ------------------------------------------------------------
+      // 池子里的远程 / 投掷单位只要已经解锁，就有 TOWER.rangedChance 的概率被优先抽中。
+      // 为什么不是"每层固定一只远程"：那会让整座塔的节奏变成可背板的
+      // （第 2 层必是一只远程），而作者要的是"站着不动就有人打你"的压力感。
+      var rangedKeys = pool.filter(function (key) {
+        var def = ENEMY_TYPES[key];
+        return def && (def.behavior === 'shooter' || def.throw);
+      });
+      function pickKey() {
+        if (rangedKeys.length && Math.random() < TOWER.rangedChance) {
+          return rangedKeys[ri(0, rangedKeys.length - 1)];
+        }
+        return pool[ri(0, pool.length - 1)];
+      }
       decks.forEach(function (d) {
-        var key = pool[ri(0, pool.length - 1)];
+        var key = pickKey();
         // x：右半部分的随机位置（左端留给出生与走位，墙上还有层号刻痕）
         // 下限 0.45W：出生点在 0.30W，留出 ~190px 的缓冲，不会一进房就贴脸
         var x = Math.round(rnd(W * 0.45, W * 0.86));
@@ -11234,6 +11556,10 @@
         this.points += gain;
         var bonus = '';
         if (Math.random() < 0.45) { this.hero.potions++; bonus = ' · 药水 +1'; }
+        // 3.0.2 · §1.9：开箱金币 / 药水进字幕
+        var chestFeed = [{ text: '+' + gain + ' 金币（宝箱）', color: '#ffd76a' }];
+        if (bonus) chestFeed.push({ text: '+1 药水（宝箱）', color: '#ffb347' });
+        this.pushGainFeed(chestFeed);
         this.showFloat(g.x, g.y - 70, '+' + gain + bonus, '#ffd76a', 20);
         this.showCenter('宝箱开启 · 金币 +' + gain + bonus, '#ffd76a');
         this.spark(g.x, g.y - 30, 0xffd76a);
@@ -11245,7 +11571,11 @@
         this.healHero(heal, true);
         var real = Math.round(this.hero.hp - before);
         this.showCenter(real > 0 ? ('祭坛祈祷 · 生命 +' + real) : '祭坛祈祷 · 生命已满，获得 3 金币', '#7fe8d8');
-        if (real <= 0) this.points += 3;
+        if (real <= 0) {
+          this.points += 3;
+          // 3.0.2 · §1.9：满血祈祷折成的 3 金币也要记一笔
+          this.pushGainFeed([{ text: '+3 金币（祭坛）', color: '#ffd76a' }]);
+        }
         this.spark(g.x, g.y - 60, 0x7fe8d8);
         sfx('heal');
       }
@@ -11589,7 +11919,7 @@
         if (Phaser.Geom.Intersects.RectangleToRectangle(rect, e.sprite.getBounds())) {
           self.diveHits[idx] = true;
           self.showFloat(e.sprite.x, e.sprite.y - 92, '下落斩', '#ff9a5a', 16);
-          self.damageEnemy(e, self.rollPlayerDamage(DIVE.mult, false, null, { move: 'dive' }), false);
+          self.damageEnemy(e, self.rollPlayerDamage(self.diveMultNow(), false, null, { move: 'dive' }), false);
           // 砸进地里：刻意保留的特性（见 DIVE 里的说明）。
           // 排在伤害之后 —— 已经被打死的敌人不该再演一遍「陷进地里」。
           if (e.alive && self.buryEnemy(e)) {
@@ -11608,6 +11938,7 @@
       var self = this;
       this.diving = false;
       this.attacking = false;
+      this._dropStartY = 0;        // 3.0.2：一次跳劈结束，下一次重新从落地处起算
       this.diveReadyAt = this.time.now + DIVE.cooldown;
       this._wasAirborne = false;
       if (this.diveFx) this.diveFx.setVisible(false);
@@ -12431,6 +12762,8 @@
       gain = Math.max(1, Math.round(gain * (1 + this.relicFx('goldGain', 0))));   // 遗物：金币获取
       if (this.hasCurse('贪婪')) gain = Math.max(1, Math.round(gain * 0.5));   // 诅咒：贪婪
       this.points += gain;
+      // 3.0.2 · §1.9：击杀金币也要进右上角字幕（这是引擎侧最高频的来源）
+      this.pushGainFeed([{ text: '+' + gain + ' 金币' + (e.tier === 'boss' ? '（层主）' : (e.tier === 'elite' ? '（精英）' : '')), color: '#ffd76a' }]);
       this.kills = (this.kills || 0) + 1;
       this.showFloat(e.sprite.x, e.sprite.y - 84, '+' + gain, '#73f0b4', 16);
       sfx(e.tier === 'boss' ? 'victory' : 'coin');
@@ -12977,6 +13310,7 @@
       if (hasCurse) this.curseText.setText(this.curses.join(' · '));
 
       this.layoutEnvHud();
+      this.layoutGainFeed();     // 3.0.2：脉冲倒计时被重排 → 字幕跟着走（保留自定义偏移）
       this.updatePulseHud();
     }
 
@@ -13430,6 +13764,8 @@
       var real = Math.round(this.hero.hp - before);
       // 3.0 批1：引擎回血同样要让内核知道（否则同一房间内任何 pushStats 都会把血压回去）
       if (real > 0) callBridge('gain', 'hp', real);
+      // 3.0.2 · §1.9：生命回复进右上角字幕（吸血 / 汲魂者 / 魂晶 / 药水 / 祭坛共用这一个出口）
+      if (real > 0) this.pushGainFeed([{ text: '+' + real + ' 生命', color: '#73f0b4' }]);
       if (real > 0 && showText !== false) this.showFloat(this.hero.x, this.hero.y - 68, '+' + real, '#7fd6a0', 17);
       else if (real <= 0 && m < 1 && showText !== false) this.showFloat(this.hero.x, this.hero.y - 68, '治疗被抑制', '#b8a8ff', 13);
       this.refreshHud();
@@ -14239,6 +14575,167 @@
        内容由宿主用**快照对比**算好再交进来（list = [{label,from,to,color,key}]），
        引擎只管画 —— 这样 20 个事件 / 13 个奖励 / 12 件商品都不用各写一句文案。
        ============================================================ */
+    /* ============================================================
+       3.0.2 · 滚动字幕的三个接口（§1.8 / §1.9）
+       ------------------------------------------------------------
+       pushGainFeed(list)  —— 任何"获得"都可以推一条：{text,color} 或
+                              {label,from,to,color}（后者与 showGain 的格式相同，
+                              于是宿主那 7 个入口一行不用改）。
+       updateGainFeed(now) —— 每帧推进：过期回收 / 槽位 / 淡入淡出。
+       gainFeedEnabled()   —— 平台判定 + 回退开关，只有它说 true 才画。
+       ============================================================ */
+    /** 该不该用滚动字幕（作者：只做电脑与平板，手机那一块已经挤满） */
+    gainFeedEnabled() {
+      if (TOGGLES.gainFeed === 'off') return false;
+      // 手机横屏 = 触摸设备且高度 < 460。平板横屏通常 ≥ 560，不受影响。
+      if (this.isTouch && this.scale.height < 460) return false;
+      return !!(this._gainFeedLines && this._gainFeedLines.length);
+    }
+
+    /** 字幕第一条的 y：腐化脉冲那一行下面 6px（脉冲隐藏时高度仍在，不能靠 visible 判断） */
+    gainFeedBaseY() {
+      var p = this.pulseText;
+      if (!p) return Math.round(this.hudSafeTop() + 40);
+      return Math.round(p.y + (p.height || 14) + 6);
+    }
+
+    /**
+     * 字幕的基准位置 + 玩家自定义偏移（3.0.2 自定义布局）
+     * ------------------------------------------------------------
+     * 为什么这里**自己就把偏移叠上**，而不是留给 applyCustomLayout：
+     * pulseText.y 会被 layoutEnvHud 反复重算（换层 / 换房 / 转屏都会触发），
+     * 而 layoutEnvHud 的调用点遍布全文件。如果这里只设基准，字幕就会在
+     * 每一次环境面板重排之后跳回默认位置 —— 玩家会看到「自定义没保存住」。
+     *
+     * 叠加的同时把结果写进 _appliedOffset：applyCustomLayout 是按**
+     * "目标偏移 − 已应用偏移"** 的差量搬位置的，记录同步之后差量恒为 0，
+     * 同一次重排里就不会被二次平移。拖动走 _shiftUnit（它自己维护记录），
+     * 两条路径因此始终一致。
+     */
+    layoutGainFeed() {
+      if (!this.gainFeedBox) return;
+      var W = this.scale.width, H = this.scale.height;
+      if (W < 40 || H < 40) return;
+      var L = this.loadCustomLayout ? this.loadCustomLayout() : null;
+      var c = L ? L['h.feed'] : null;
+      var ox = c ? (c.dx || 0) * W : 0;
+      var oy = c ? (c.dy || 0) * H : 0;
+      this.gainFeedBox.setPosition(W - 24 + ox, this.gainFeedBaseY() + oy);
+      if (!this._appliedOffset) this._appliedOffset = {};
+      this._appliedOffset['h.feed'] = { dx: ox, dy: oy };
+    }
+
+    /**
+     * 编辑布局时给字幕填四行示例（3.0.2）
+     * ------------------------------------------------------------
+     * 空 Text 的包围盒是 0×0 —— 玩家在「按键自定义」里既看不见它、也点不到。
+     * 所以进编辑模式时先塞四条示例；退出时若原本没有真实条目就清掉。
+     */
+    fillGainFeedPreview() {
+      if (!this._gainFeedLines || !this._gainFeedLines.length) return;
+      this.layoutGainFeed();
+      if (this.gainFeed && this.gainFeed.length) return;   // 有真实条目就显示真实内容
+      var demo = ['+12 金币', '+4 经验', '+3 护盾', '+2 生命'];
+      var cols = ['#ffd76a', '#9fe0c0', '#5fd0e0', '#73f0b4'];
+      this._gainFeedLines.forEach(function (t, i) {
+        t.setText(demo[i] || '+1');
+        t.setColor(cols[i] || UI.text);
+        t.setPosition(0, i * GAINFEED.lineH);
+        t.setAlpha(0.9);
+        t.setVisible(true);
+      });
+      this._feedPreview = true;
+    }
+
+    /** 退出编辑模式：清掉示例（真实条目由 updateGainFeed 接管） */
+    clearGainFeedPreview() {
+      if (!this._feedPreview) return;
+      this._feedPreview = false;
+      (this._gainFeedLines || []).forEach(function (t) {
+        t.setVisible(false);
+        t.setAlpha(1);
+      });
+    }
+
+    /**
+     * 推一条 / 一组数值变化进字幕
+     * @param {Array} list [{text,color}] 或 [{label,from,to,color}]
+     * @returns {boolean}
+     */
+    pushGainFeed(list) {
+      if (!this.gainFeedEnabled()) return false;
+      if (!this.gainFeed) this.gainFeed = [];
+      var items = [];
+      (list || []).forEach(function (it) {
+        if (!it) return;
+        var text = it.text;
+        if (!text && it.label && it.from !== undefined && it.to !== undefined && it.from !== it.to) {
+          text = it.label + ' ' + it.from + ' → ' + it.to;
+        }
+        if (!text) return;
+        items.push({ text: String(text), color: it.color || UI.text });
+      });
+      if (!items.length) return false;
+
+      var self = this;
+      items.forEach(function (it) {
+        self.gainFeed.push({ text: it.text, color: it.color, age: 0, life: GAINFEED.life, fade: GAINFEED.fade });
+      });
+      // 密集：条数越多，单条存在时间越短（§1.8 第 5 点）。
+      // 全部条目一起改 —— 否则新条目压短了、旧条目还按 2.5s 赖着，叠成一坨。
+      var n = this.gainFeed.length;
+      var life = clamp(Math.round(GAINFEED.life * GAINFEED.maxLines / Math.max(1, n)),
+        GAINFEED.minLife, GAINFEED.life);
+      var fade = Math.min(GAINFEED.fade, Math.round(life * 0.2));
+      this.gainFeed.forEach(function (e) { e.life = life; e.fade = fade; });
+      // 溢出：已有 4 条时来第 5 条 → 最旧的一条立刻让位（§1.8 第 4 点）
+      while (this.gainFeed.length > GAINFEED.maxLines) this.gainFeed.shift();
+      // 让下一帧立刻重排（否则最多等一帧才有字）
+      this.updateGainFeed(0);
+      return true;
+    }
+
+    /** 每帧推进字幕：过期回收 + 槽位 + 淡入淡出（由下至上）
+     *  ⚠️ 用**累加 dt** 计龄，不用「现在 − 起点」的时间戳：
+     *  场景被 pause 过（地图 / 商店 / 自动暂停）之后 Clock.now 会跳掉一截，
+     *  时间戳算法会让刚推的条目瞬间"已过期"（实测：暂停 10 秒，恢复后 4 条全没了）。
+     *  累加 dt 天然与"场景真的跑了几帧"同步，暂停时冻结、恢复后继续。 */
+    updateGainFeed(dt) {
+      var lines = this._gainFeedLines, list = this.gainFeed;
+      if (!lines || !lines.length || !list) return;
+      // 编辑布局时冻结：屏幕上留着（可能的）真实条目或示例文案，便于拖动对齐
+      if (this.editMode) return;
+      var step = Math.max(0, dt || 0);
+      for (var k = 0; k < list.length; k++) list[k].age += step;
+      while (list.length && list[0].age >= list[0].life) list.shift();
+      var i;
+      if (!list.length) {
+        for (i = 0; i < lines.length; i++) if (lines[i].visible) lines[i].setVisible(false);
+        return;
+      }
+      var n = list.length;
+      for (i = 0; i < lines.length; i++) {
+        var ln = lines[i];
+        if (i >= n) { if (ln.visible) ln.setVisible(false); continue; }
+        var e = list[i];
+        var age = e.age;
+        // alpha = min(淡入, 淡出)，夹在 0..1
+        var a = clamp(Math.min(age / e.fade, (e.life - age) / e.fade), 0, 1);
+        // 槽位：最新的一条在最下（第 4 行），旧的往上顶；条数不满时整体靠下 ——
+        // 于是"新条目从下方出现、旧条目被顶上去"这件事是位置自然决定的，不用补间。
+        // ⚠️ 只改**容器内的局部 y**：容器的绝对位置归 layoutGainFeed + 自定义偏移管，
+        //    这里再 setPosition 一次就会把玩家拖出来的位置弹回原位。
+        var y = (i + (GAINFEED.maxLines - n)) * GAINFEED.lineH;
+        // 入场那 0.24s 从下方 12px 滑上来，给一个明确的"进入"方向
+        if (age < 240) y += (1 - age / 240) * 12;
+        ln.setPosition(0, Math.round(y));
+        if (ln.text !== e.text) ln.setText(e.text);
+        if (ln.style.color !== e.color) ln.setColor(e.color);
+        ln.setAlpha(a);
+        if (!ln.visible) ln.setVisible(true);
+      }
+    }
+
     showGain(list) {
       var self = this;
       var items = (list || []).filter(function (x) {
@@ -14250,6 +14747,14 @@
 
       // 先做 HUD 微动（即使横幅建不出来也要动）
       this.flashGain(items);
+
+      // 3.0.2：电脑 / 平板改走右上角滚动字幕（§1.8），手机保持原来的中间横幅。
+      // 两层反馈都保留：字幕负责"我到底加了多少"，flashGain 负责"HUD 那一位动一下"。
+      if (this.gainFeedEnabled()) {
+        this.pushGainFeed(items);
+        this.refreshHud();
+        return true;
+      }
 
       // 旧横幅先收掉：连续两个入口触发时不叠加
       if (this._gainBanner) {
@@ -14519,6 +15024,21 @@
       // 放在 running 判断之前：结算 / 死亡时 running 可能已经为 false。
       this.syncUiBarVisibility();
 
+      // 3.0.2 · 地图"开着但没建出来"的自愈（实测死局：读档停在非战斗房 → 整局卡死）
+      // ------------------------------------------------------------
+      // 病根是三条互相咬死：openMap() 先置 mapOpen + 暂停物理、再建层；
+      // buildMapLayer() 在画布还没布局（scale = 1×1）时 `return null` 什么都不建；
+      // onResize() 又只在 `mapOpen && mapLayer` 时才重排 —— 层是 null 就永远补不回来。
+      // 而"非战斗房起手的存档"会让 press('map') 发生在**开局同步流程**里，正好踩中 1×1。
+      // 这里每帧补一次：画布一旦有了真实尺寸，立刻把层建出来（物理仍暂停，状态不变）。
+      if (this.mapOpen && !this.mapLayer && this.scale.width >= 40 && this.scale.height >= 40) {
+        this.buildMapLayer();
+        if (this.mapLayer) {
+          this.mapLayer.setAlpha(0);
+          this.tweens.add({ targets: this.mapLayer, alpha: 1, duration: 180 });
+        }
+      }
+
       // 背景星点缓慢左移（每 3 帧更新一次，降低 CPU 占用）
       this._starTick = (this._starTick || 0) + 1;
       if (this._starTick % 3 === 0) {
@@ -14532,6 +15052,12 @@
 
       // 血条补间要一直推进：倒下 / 结算动画期间血条也要落到真实数值
       this.updateMeters(dt, time);
+      // 3.0.2：雾的软斑缓慢漂移 + 右上角数值字幕。
+      // 两样都排在 `!this.running` 之前 —— 打开地图 / 商店 / 奖励面板时
+      // 字幕必须继续滚完，不能卡在半透明（§1.8 验收的最后一条）。
+      this.updateFogBlobs(time);
+      // 字幕按 dt 累加计龄（场景暂停时自然冻结，恢复后不会"跳过期"）
+      this.updateGainFeed(dt);
       // 布局编辑：外框走包围盒缓存，每帧只重画描边；被拖动的那一个由
       // layoutEditMove 单独更新（见「拖动热路径」的说明）
       if (this.editMode) this.drawEditOverlay();
@@ -14737,6 +15263,9 @@
       }
       // 穿层窗口到点 → 恢复碰撞；期间不要被别的分支提前恢复
       if (this._dropUntil && this.time.now > this._dropUntil) this._dropUntil = 0;
+      // 3.0.2 · §1.2：已经落地了就不再算"这次穿层的下落距离"——
+      // 否则玩家穿下来、走两步再起跳按 J，会白拿一段倍率。
+      if (onGround && this._dropStartY && !this.diving) this._dropStartY = 0;
 
       // 加速下坠：空中按住穿层键（空格 / 摇杆下推）；竖塔里**不**开穿透，否则跳一下按住就一路穿到底
       var fastFall = !onGround && dropHeld && !this.diving && !this.dodging && !this.isCharging && !this.heroDead;
@@ -17656,7 +18185,8 @@
               e.pounceUntil = time + RHYTHM.pounceTime;
               e.didHit = false;
               spr.setVelocityX(dirToHero * RHYTHM.pounceSpeedX);
-              spr.setVelocityY(-RHYTHM.pounceSpeedY);
+              // 3.0.2 · §1.7：竖塔里要够得着上一层（跳高 238 > 层距 220）
+              spr.setVelocityY(-(self._verticalRoom ? RHYTHM.pounceSpeedYTower : RHYTHM.pounceSpeedY));
               spr.play(self.mobAnimKey(e, 'attack'), true);
             } else if (e.willThrow) {
               e.willThrow = false;
@@ -18026,6 +18556,15 @@
       p._grav = MOB_THROW.gravity;
       p._stick = MOB_THROW.stick;
       p._spin = true;
+      /* 3.0.2 · §1.7 补漏：掷矛也要穿一层楼板
+         ------------------------------------------------------------
+         原来只有 enemyShoot 的弹丸设了 _pierceFloors，掷矛与蛛网漏了。
+         updateProjectiles 里是 `if (onDeck && (p._pierceFloors || 0) > 0) { 穿 } else { 插住 }`，
+         所以漏了就等于"撞到楼板就停"：上层的投掷兵往下打会被自家楼板挡住，
+         而且不会触发 flashTowerDeck 的"这一发从上面来"读招提示。
+         往上打不受影响（矛的出生点本来就在楼板线之上），所以这不是"打不到人"，
+         是"往下打打不到 + 没有读招线索"。抛物线的 _grav 手动积分与穿层互不影响。*/
+      p._pierceFloors = this.pierceFloorsFor(e);
       this.projectiles.push(p);
       this.spark(mx, my, color);
       sfx('spear');
@@ -18054,6 +18593,11 @@
       p._web = true;
       p._dmg = 0;
       p._lifeUntil = this.time.now + 3600;
+      /* 3.0.2 · §1.7 补漏：蛛网同样穿一层楼板 —— 和掷矛保持一致。
+         网不造成伤害（_dmg 0），它只是"从上面来的一发"：楼板闪一下同样是读招线索。
+         反过来说，网要是被楼板挡住，上层的织网者对下层玩家就完全无效，
+         与掷矛割裂成两套规则。上限仍是 1 层（pierceFloorsFor 定的）。*/
+      p._pierceFloors = this.pierceFloorsFor(e);
       this.projectiles.push(p);
       this.showFloat(spr.x, spr.y - 86, '吐网', '#a8e88a', 15);
       sfx('shot');
@@ -18581,10 +19125,18 @@
      * 机制与流程的独立开关（单向平台 / 三色 / 读条 / 踩头 / 守点门闩 / 过门结算）
      * 只接受 TOGGLES 里已有的键；未知键忽略。返回合并后的完整状态。
      * 例：API.setToggles({ oneWay:false, stomp:false, holdGate:false })
+     *
+     * ⚠️ 3.0.2：TOGGLES 里多了两个**字符串**开关（fogStyle / gainFeed）。
+     * 原来这里一律 `!!obj[k]` —— `{fogStyle:'rect'}` 会被压成 true，
+     * 于是回退开关直接失效。所以按当前值的类型分流。
      */
     setToggles: function (obj) {
       if (obj) {
-        for (var k in obj) { if (k in TOGGLES) TOGGLES[k] = !!obj[k]; }
+        for (var k in obj) {
+          if (!(k in TOGGLES)) continue;
+          if (typeof TOGGLES[k] === 'string') TOGGLES[k] = String(obj[k]);
+          else TOGGLES[k] = !!obj[k];
+        }
       }
       var out = {};
       for (var k2 in TOGGLES) out[k2] = TOGGLES[k2];
@@ -18594,6 +19146,36 @@
       var out = {};
       for (var k in TOGGLES) out[k] = TOGGLES[k];
       return out;
+    },
+    /**
+     * 3.0.2 · 雾带画法回退开关（§1.1 / §3）
+     * setFogStyle('rect')  → 退回 3.0.1 之前的硬边矩形（当场生效，不用重进房间）
+     * setFogStyle('gradient') → 渐变带 + 软斑（默认）
+     */
+    setFogStyle: function (style) {
+      TOGGLES.fogStyle = (style === 'rect') ? 'rect' : 'gradient';
+      var s = state.scene;
+      if (s && s.ready) {
+        try {
+          s.buildFog();
+          s.refreshEnvironment();
+          s.syncBackdropScroll();
+        } catch (e) { console.warn('[战斗2D] 切换雾带画法失败：', e); }
+      }
+      return TOGGLES.fogStyle;
+    },
+    /**
+     * 3.0.2 · 数值字幕回退开关（§3）
+     * setGainFeed('off') → 退回中间横幅（手机本来就是这条路径）
+     */
+    setGainFeed: function (on) {
+      TOGGLES.gainFeed = (on === 'off' || on === false) ? 'off' : 'on';
+      var s = state.scene;
+      if (s && s.gainFeed) {
+        s.gainFeed.length = 0;
+        if (s._gainFeedLines) s._gainFeedLines.forEach(function (t) { t.setVisible(false); });
+      }
+      return TOGGLES.gainFeed;
     },
     /**
      * 屏幕中央飘一行提示（宿主用来报"遗物已集齐 → 折成金币"这类补偿）
@@ -18619,6 +19201,19 @@
       if (!s || !s.ready) return false;
       if (typeof s.flashGain !== 'function') return false;
       try { return s.flashGain(list); } catch (e) { return false; }
+    },
+    /**
+     * 3.0.2 · §1.9：让宿主也能往右上角滚动字幕里推一条
+     * ------------------------------------------------------------
+     * 引擎自己产生的来源（击杀 / 开箱 / 魂晶 / 祭坛 / 回血 / 护盾）在引擎内直接推；
+     * 但「清房金币 + 经验」「宝箱房 +15」是**宿主算的**（settleRoomGold），
+     * 引擎根本不知道 —— 所以留这一个入口。
+     * list = [{ text, color }]；手机 / 关闭开关时返回 false（什么都不会画）。
+     */
+    pushGainFeed: function (list) {
+      var s = state.scene;
+      if (!s || !s.ready || typeof s.pushGainFeed !== 'function') return false;
+      try { return s.pushGainFeed(list); } catch (e) { return false; }
     },
     /**
      * 机制参数默认值（按难度给整张表）
@@ -18674,10 +19269,25 @@
       if (!o) return { step: TOWER.step, enemyChase: TOWER.enemyChase };
       if (typeof o.enemyChase === 'boolean') TOWER.enemyChase = o.enemyChase;
       if (typeof o.step === 'number' && o.step >= 160 && o.step <= 320) TOWER.step = Math.round(o.step);
-      return { step: TOWER.step, enemyChase: TOWER.enemyChase };
+      if (typeof o.rangedChance === 'number') TOWER.rangedChance = clamp(o.rangedChance, 0, 1);
+      return { step: TOWER.step, enemyChase: TOWER.enemyChase, rangedChance: TOWER.rangedChance };
     },
     getTowerOptions: function () {
-      return { step: TOWER.step, enemyChase: TOWER.enemyChase, topPad: TOWER.topPad, dropMs: TOWER.dropMs };
+      return {
+        step: TOWER.step, enemyChase: TOWER.enemyChase, topPad: TOWER.topPad,
+        dropMs: TOWER.dropMs, rangedChance: TOWER.rangedChance
+      };
+    },
+    /**
+     * 3.0.2 · §1.2 跳劈倍率的回退开关
+     * setDiveOptions({ fallBonus: 0 }) → 竖塔里也回到固定 1.9（3.0 的行为）
+     */
+    setDiveOptions: function (o) {
+      if (o) {
+        if (typeof o.fallBonus === 'number') DIVE.fallBonus = Math.max(0, o.fallBonus);
+        if (typeof o.fallSpan === 'number' && o.fallSpan >= 100) DIVE.fallSpan = Math.round(o.fallSpan);
+      }
+      return { mult: DIVE.mult, fallBonus: DIVE.fallBonus, fallSpan: DIVE.fallSpan };
     },
 
     /**
@@ -18696,6 +19306,16 @@
     },
     getSkeletonVertical: function () {
       return { vertical: SKELETON.vertical, enabled: SKELETON.enabled.slice() };
+    },
+    /**
+     * 3.0.2 · §1.6：竖塔保底的回退开关
+     * setSkeletonPity(0) → 只靠权重，不做连黑兜底；setSkeletonPity(4) → 恢复默认
+     */
+    setSkeletonPity: function (n) {
+      var v = Math.max(0, Math.round(n || 0));
+      SKELETON.verticalPity = v;
+      if (!v) this._verticalGap = 0;
+      return { pity: SKELETON.verticalPity, gap: (state.scene && state.scene._verticalGap) || 0 };
     },
 
     setCollapseSkeleton: function (name, on) {
@@ -19010,6 +19630,9 @@
           names: SKELETON.names,
           enabled: SKELETON.enabled.slice(),
           vertical: SKELETON.vertical,
+          // 3.0.2 · §1.6：竖塔保底的状态（验收要能读到"连续几次没抽到"）
+          verticalPity: SKELETON.verticalPity,
+          verticalGap: s._verticalGap || 0,
           samples: SKELETON.samples,
           last: SKELETON.last ? { skeleton: SKELETON.last.skeleton, floor: SKELETON.last.floor, roomType: SKELETON.last.roomType } : null
         };

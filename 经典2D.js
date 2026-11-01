@@ -1926,6 +1926,23 @@
     var xp = Math.max(1, Math.round((5 + s.floor) * (s.hasExpBoost ? 1.5 : 1)));
     s.player.xp = (s.player.xp || 0) + xp;
     syncPoints();
+    // 3.0.2 · §1.9：清房金币 + 经验进右上角滚动字幕
+    // ------------------------------------------------------------
+    // 这是**最主要的稳定收入**，以前只有日志 —— 2D 玩家看不到日志，
+    // 所以体感上"打完一间房什么都没加"。宝箱房的 +15 也走同一个分支（gain=15）。
+    if (gain > 0 || xp > 0) {
+      var feed = [];
+      if (gain > 0) {
+        feed.push({
+          text: '+' + gain + ' 金币' + (roomType === 'treasure' ? '（宝箱房）' : '（清房）'),
+          color: '#ffd76a'
+        });
+      }
+      if (xp > 0) feed.push({ text: '+' + xp + ' 经验', color: '#9fe0c0' });
+      if (e && typeof e.pushGainFeed === 'function') {
+        try { e.pushGainFeed(feed); } catch (err) { /* 忽略 */ }
+      }
+    }
     return gain;
   }
 
