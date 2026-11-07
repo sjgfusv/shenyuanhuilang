@@ -193,7 +193,7 @@
 已部署在 Netlify，点开即玩（不用下载、不用注册）：
 
 ```
-https://effervescent-puppy-941d9f.netlify.app/
+https://shenyuanhuilang.netlify.app/
 ```
 
 ### 方式二：本地服务器（推荐）
