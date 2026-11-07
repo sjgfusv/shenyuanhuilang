@@ -85,7 +85,7 @@ clear rooms / grab relics / shop / endure curses ────  beat the floor lo
 | Mirror | A Mimic that **copies your stats, body and attack style** |
 | Treasure | No combat; gold + potions |
 | Shrine | Pray for healing, or **sacrifice health to remove one curse** |
-| Shop | In-canvas shop: items, purification, relic-related goods |
+|商店| In-canvas shop: items, purification, relic-related goods |
 | Rest | Heal up / tidy your build |
 | Random event | One draw from the classic event pool (18+) |
 | Floor lord | The floor boss (Floor Lord / Shadow King); beating it takes you deeper |
@@ -164,7 +164,7 @@ see [`其他/角色形象设定.md`](其他/角色形象设定.md) (Chinese).
 Already deployed on Netlify — click and play, no download, no sign-up:
 
 ```
-https://effervescent-puppy-941d9f.netlify.app/
+https://shenyuanhuilang.netlify.app/
 ```
 
 ### Option 2: a local server (recommended)
